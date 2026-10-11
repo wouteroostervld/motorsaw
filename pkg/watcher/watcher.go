@@ -2,6 +2,7 @@ package watcher
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -86,11 +87,11 @@ func (w *FileWatcher) Unwatch(path string) error {
 		return nil // Not watching
 	}
 
-	if err := w.watcher.Remove(abs); err != nil {
+	// A directory that was removed is not watched any more already
+	delete(w.watched, abs)
+	if err := w.watcher.Remove(abs); err != nil && !errors.Is(err, fsnotify.ErrNonExistentWatch) {
 		return fmt.Errorf("failed to unwatch %s: %w", abs, err)
 	}
-
-	delete(w.watched, abs)
 	return nil
 }
 

@@ -313,6 +313,22 @@ same for one run, and win over the configuration. A kind that is named is
 still only built where it is switched on. Files that change while the daemon
 runs are indexed in every kind that is on for them, whatever the scan does.
 
+Before it scans, the daemon makes the index forget the files under the
+`include` directories that your configuration ignores: those in a directory
+that is hidden or in `exclude`, and those the `blacklist` rejects. So a
+directory you exclude after it was indexed leaves the index, and with it a
+file there that you indexed by name. What you indexed by hand outside the
+`include` directories is left alone. No file on disk is touched.
+
+After changing `~/.chainsaw/config.yaml`, send the daemon a SIGHUP, with
+`systemctl --user reload chainsawd` when it runs as the service of
+`examples/chainsawd.service`, or with `kill -HUP`. It is a warm restart: the
+daemon reads the configuration again, sets its watches to the directories
+that are included now (also the ones made since it started), prunes, and
+scans as when it starts. A configuration that cannot be used is reported in
+the log and the daemon carries on with the one it had. The flags it was
+started with still hold.
+
 The index is `~/.chainsaw/graph.db`. It holds names, locations, edges and,
 when embeddings are on, vectors. It holds no source text: the code a query
 or a search shows (`snippet`, `--expand`) is read from the files when it is

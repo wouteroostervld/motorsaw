@@ -8,6 +8,9 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/chainsaw daemon start
+# "systemctl --user reload chainsawd" after changing ~/.chainsaw/config.yaml:
+# the daemon reads it again, without stopping
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
 
