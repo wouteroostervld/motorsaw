@@ -7,55 +7,75 @@ import (
 	"strings"
 )
 
-// ShouldIndexDirectory checks if a directory should be indexed
-// Returns: is_in_include AND NOT is_in_exclude
+// Excluded reports whether a walk that starts at root skips a directory
+// because of the exclude entries of the configuration. Every command that
+// walks a tree asks it here, so that they agree on what is excluded.
+//
+// An entry is the name of a directory ("vendor"), a glob for one ("*.cache"),
+// several names in a row ("tools/ghidra") or an absolute path. Names are held
+// against the part of the path below root only, and an absolute path counts
+// when it lies below root: what is named by hand is not excluded by where it
+// is. A directory inside an excluded one is excluded too. Both paths must be
+// absolute.
+func Excluded(root, dir string, exclude []string) bool {
+	sep := string(filepath.Separator)
+	root, dir = filepath.Clean(root), filepath.Clean(dir)
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+sep) {
+		return false
+	}
+	names := strings.Split(rel, sep)
+
+	for _, entry := range exclude {
+		if entry == "" {
+			continue
+		}
+		if filepath.IsAbs(entry) {
+			entry = filepath.Clean(entry)
+			if below(entry, root) && (dir == entry || below(dir, entry)) {
+				return true
+			}
+			continue
+		}
+		if strings.Contains(sep+rel+sep, sep+entry+sep) {
+			return true
+		}
+		for _, name := range names {
+			if matched, err := filepath.Match(entry, name); err == nil && matched {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// below reports whether a path lies inside a directory
+func below(path, dir string) bool {
+	if dir == string(filepath.Separator) {
+		return path != dir
+	}
+	return strings.HasPrefix(path, dir+string(filepath.Separator))
+}
+
+// ShouldIndexDirectory checks if a directory should be indexed: it is one of
+// the included directories or inside one, and a walk from that one would not
+// skip it (see Excluded)
 func ShouldIndexDirectory(path string, include []string, exclude []string) (bool, error) {
-	// Normalize the path
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return false, err
 	}
-	absPath = filepath.Clean(absPath)
 
-	// Check if path is in include
-	inInclude := false
 	for _, includePath := range include {
-		normalizedInclude := filepath.Clean(includePath)
-
-		// Check if path is within or equals the include path
-		if strings.HasPrefix(absPath, normalizedInclude+string(filepath.Separator)) ||
-			absPath == normalizedInclude {
-			inInclude = true
-			break
+		root := filepath.Clean(includePath)
+		if absPath != root && !below(absPath, root) {
+			continue
+		}
+		if !Excluded(root, absPath, exclude) {
+			return true, nil
 		}
 	}
-
-	if !inInclude {
-		return false, nil
-	}
-
-	// Check if path matches any exclude pattern
-	for _, excludePattern := range exclude {
-		// Support both glob patterns and literal paths
-		matched, err := filepath.Match(excludePattern, filepath.Base(absPath))
-		if err != nil {
-			// If pattern is invalid, try literal comparison
-			if strings.Contains(absPath, excludePattern) {
-				return false, nil
-			}
-		} else if matched {
-			return false, nil
-		}
-
-		// Also check full path match
-		if strings.HasPrefix(absPath, excludePattern) ||
-			strings.Contains(absPath, string(filepath.Separator)+excludePattern+string(filepath.Separator)) ||
-			strings.HasSuffix(absPath, string(filepath.Separator)+excludePattern) {
-			return false, nil
-		}
-	}
-
-	return true, nil
+	return false, nil
 }
 
 // ShouldIndexFile checks if a file should be indexed

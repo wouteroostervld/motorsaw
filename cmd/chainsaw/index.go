@@ -290,7 +290,7 @@ func syncIndex(database *db.DB, st *settings, roots []string, opts syncOptions) 
 				// A directory named by hand is not limited to the included
 				// directories, but excluded ones are skipped as the daemon does
 				name := d.Name()
-				if path != root && (strings.HasPrefix(name, ".") || excluded(path, profile.Exclude)) {
+				if path != root && (strings.HasPrefix(name, ".") || filter.Excluded(root, path, profile.Exclude)) {
 					return filepath.SkipDir
 				}
 				return nil
@@ -422,12 +422,6 @@ func removedSummary(n int) string {
 		return "1 removed file detected"
 	}
 	return fmt.Sprintf("%d removed files detected", n)
-}
-
-// excluded reports whether a directory is one the configuration says to skip
-func excluded(dir string, exclude []string) bool {
-	ok, _ := filter.ShouldIndexDirectory(dir, []string{dir}, exclude)
-	return !ok
 }
 
 // autoIndex brings one kind of index up to date with the current directory

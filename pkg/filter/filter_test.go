@@ -137,6 +137,51 @@ func TestShouldIndexDirectory(t *testing.T) {
 	}
 }
 
+func TestExcluded(t *testing.T) {
+	root := "/home/user/project"
+	tests := []struct {
+		name    string
+		dir     string
+		exclude []string
+		want    bool
+	}{
+		{"a name", root + "/vendor", []string{"vendor"}, true},
+		{"a name, deeper", root + "/a/vendor", []string{"vendor"}, true},
+		{"inside an excluded directory", root + "/vendor/lib/x", []string{"vendor"}, true},
+		{"part of a name", root + "/vendored", []string{"vendor"}, false},
+		{"a glob", root + "/a/x.cache", []string{"*.cache"}, true},
+		{"a glob, inside", root + "/x.cache/y", []string{"*.cache"}, true},
+		{"names in a row", root + "/tools/ghidra/src", []string{"tools/ghidra"}, true},
+		{"names in a row, apart", root + "/tools/x/ghidra", []string{"tools/ghidra"}, false},
+		{"an absolute path", root + "/tools/ghidra", []string{root + "/tools/ghidra"}, true},
+		{"an absolute path, inside", root + "/tools/ghidra/src", []string{root + "/tools/ghidra"}, true},
+		{"an absolute path, beside", root + "/tools/ghidra2", []string{root + "/tools/ghidra"}, false},
+		{"an absolute path elsewhere", root + "/tools/ghidra", []string{"/opt/tools/ghidra"}, false},
+		{"nothing excluded", root + "/src", nil, false},
+		{"an empty entry", root + "/src", []string{""}, false},
+		{"the root itself", root, []string{"project", root}, false},
+		{"outside the root", "/home/user/vendor", []string{"vendor"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := Excluded(root, tt.dir, tt.exclude); got != tt.want {
+				t.Errorf("Excluded(%s, %v) = %v, want %v", tt.dir, tt.exclude, got, tt.want)
+			}
+		})
+	}
+
+	// What is named by hand is not excluded by where it is
+	inside := root + "/vendor/lib"
+	for _, exclude := range [][]string{{"vendor"}, {root + "/vendor"}, {inside}} {
+		if Excluded(inside, inside+"/src", exclude) {
+			t.Errorf("Excluded below %s with %v, want it walked", inside, exclude)
+		}
+	}
+	if !Excluded(inside, inside+"/vendor", []string{"vendor"}) {
+		t.Error("vendor below a root inside vendor is not excluded")
+	}
+}
+
 func TestFilterOrder(t *testing.T) {
 	// Test that blacklist→whitelist order is correct
 	// File matches both blacklist and whitelist should be ALLOWED
