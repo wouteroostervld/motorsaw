@@ -157,3 +157,48 @@ func TestSearch_WhichFiles(t *testing.T) {
 		t.Errorf("explicit file: got %d files, err %v", len(files), err)
 	}
 }
+
+// Directories are excluded as the index excludes them: by name, by several
+// names in a row and by absolute path
+func TestSearch_ExcludedDirectories(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, map[string]string{
+		"a.py":                  "needle = 1\n",
+		"tools/b.py":            "needle = 2\n",
+		"tools/ghidra/c.py":     "needle = 3\n",
+		"tools/ghidra/sub/d.py": "needle = 4\n",
+		"tools/ghidra2/e.py":    "needle = 5\n",
+		"lib/cache/f.py":        "needle = 6\n",
+	})
+	ghidra := filepath.Join(dir, "tools", "ghidra")
+	rest := []string{"a.py:  () 01", "lib/cache/f.py:  () 01", "tools/b.py:  () 01", "tools/ghidra2/e.py:  () 01"}
+
+	for _, exclude := range [][]string{{ghidra}, {ghidra + "/"}, {"tools/ghidra"}, {"ghidra"}} {
+		files, err := Search(`needle`, []string{dir}, Options{Exclude: exclude})
+		if err != nil {
+			t.Fatalf("Search failed: %v", err)
+		}
+		if got := summary(dir, files); !reflect.DeepEqual(got, rest) {
+			t.Errorf("exclude %q: got %q, want %q", exclude, got, rest)
+		}
+	}
+
+	// From a directory above as well, as when run in the root of a project
+	files, err := Search(`needle`, []string{filepath.Join(dir, "tools")}, Options{Exclude: []string{ghidra, "lib/cache"}})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	want := []string{"tools/b.py:  () 01", "tools/ghidra2/e.py:  () 01"}
+	if got := summary(dir, files); !reflect.DeepEqual(got, want) {
+		t.Errorf("from tools: got %q, want %q", got, want)
+	}
+
+	// A directory named explicitly is searched even when it is excluded, and
+	// so is what is below it
+	for root, want := range map[string]int{ghidra: 2, filepath.Join(ghidra, "sub"): 1} {
+		files, err := Search(`needle`, []string{root}, Options{Exclude: []string{ghidra, "ghidra"}})
+		if err != nil || len(files) != want {
+			t.Errorf("explicit directory %s: got %d files, err %v, want %d", root, len(files), err, want)
+		}
+	}
+}

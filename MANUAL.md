@@ -68,8 +68,9 @@ one.
 | `--expand body\|file\|calls` | Show the code, see [below](#showing-code---expand) |
 
 Without a path the current directory is searched. Hidden directories and the
-`exclude` directories of your configuration are skipped; a file named
-explicitly is always searched. `^` and `$` match at line ends. No index is
+`exclude` directories of your configuration are skipped, as they are by
+`chainsaw index` and the daemon; a file or directory named explicitly is
+always searched. `^` and `$` match at line ends. No index is
 needed, so results are always current.
 
 `-s` is the quick way to answer "which functions touch this": it is the list
