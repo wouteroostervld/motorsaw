@@ -12,7 +12,8 @@ import (
 // walks a tree asks it here, so that they agree on what is excluded.
 //
 // An entry is the name of a directory ("vendor"), a glob for one ("*.cache"),
-// several names in a row ("tools/ghidra") or an absolute path. Names are held
+// several names in a row ("tools/ghidra") or an absolute path, each with or
+// without a slash at the end. Names are held
 // against the part of the path below root only, and an absolute path counts
 // when it lies below root: what is named by hand is not excluded by where it
 // is. A directory inside an excluded one is excluded too. Both paths must be
@@ -27,6 +28,10 @@ func Excluded(root, dir string, exclude []string) bool {
 	names := strings.Split(rel, sep)
 
 	for _, entry := range exclude {
+		// "vendor/" is how many write a directory
+		if trimmed := strings.TrimRight(entry, sep); trimmed != "" {
+			entry = trimmed
+		}
 		if entry == "" {
 			continue
 		}

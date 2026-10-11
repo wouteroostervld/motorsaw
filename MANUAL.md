@@ -501,7 +501,9 @@ profiles:
       - '\.min\.js$'
 ```
 
-Write directory names without a trailing slash. A project's `.config.yaml`
+An `exclude` entry is the name of a directory (`vendor`), a glob for one
+(`*.cache`), several names in a row (`tools/ghidra`) or an absolute path; a
+slash at the end is allowed. A project's `.config.yaml`
 can add to `exclude` and `blacklist` and set `index` and `follow`. Of the settings of
 older versions, `embedding_model` still names the model when `embeddings:`
 does not (and, as before, switches nothing on); `chunk_size`, `overlap`,
