@@ -587,26 +587,78 @@ func m68kLabel(b *builder, n *sitter.Node) string {
 	return b.text(n.ChildByFieldName("name"))
 }
 
-// m68kTarget returns the label an instruction calls or jumps to. A jump
-// counts as a call when it leaves the definition it is in: that is how one
-// routine continues in another. A call through a register with a named
-// offset, jsr _LVOAllocMem(a6), is a call of that name.
-func m68kTarget(b *builder, n *sitter.Node, sc scope) string {
-	if n.Kind() != "instruction" {
-		return ""
-	}
-	mnemonic := strings.ToLower(b.text(n.ChildByFieldName("mnemonic")))
-	operands := n.ChildByFieldName("operands")
-	if !m68kBranches[mnemonic] || operands == nil || operands.NamedChildCount() == 0 {
-		return ""
-	}
+// m68kLoad is what an address register was last loaded with, when that is
+// something that can be called
+type m68kLoad struct {
+	names    []string // The label, or what a comment says it is
+	relation string   // calls when the operand names the label, may_call when a comment does
+	age      int      // Instructions since
+}
 
-	target := operands.NamedChild(operands.NamedChildCount() - 1)
+// m68kLoadSpan is how many instructions a register is taken to keep what it
+// was loaded with: a call through it comes right after, with at most the
+// arguments set up in between
+const m68kLoadSpan = 6
+
+var (
+	m68kName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_.$]*$`)
+	// The number of a BCPL global, as a disassembly notes it: G82, G-21
+	m68kGlobal = regexp.MustCompile(`^G-?[0-9]+$`)
+)
+
+// m68kComment returns the words of the comment after an instruction, on the
+// same line
+func m68kComment(b *builder, n *sitter.Node) []string {
+	c := n.NextNamedSibling()
+	if c == nil || c.Kind() != "comment" {
+		return nil
+	}
+	if _, row := b.ownStart(c); row != n.EndPosition().Row {
+		return nil
+	}
+	return strings.Fields(strings.TrimLeft(b.text(c), "; \t\r\n*"))
+}
+
+// m68kNamed returns the names a comment gives to what an instruction calls
+// or loads. Generated sources and disassemblies say there what the syntax
+// cannot:
+//
+//	jsr     -198(a6)        ; exec AllocMem           a library vector
+//	movea.l 328(a2),a4      ; G82 dos_g82_UnLoadSeg   a BCPL global
+//
+// The first is the routine AllocMem of exec, which such sources define as
+// exec_AllocMem; the second names its label outright. A comment of any
+// other shape is prose, and names nothing.
+func m68kNamed(words []string, vector bool) []string {
+	for _, w := range words {
+		if !m68kName.MatchString(w) {
+			return nil
+		}
+	}
+	switch {
+	case len(words) == 1 && !m68kGlobal.MatchString(words[0]):
+		return words
+	case len(words) == 2 && m68kGlobal.MatchString(words[0]):
+		return words[1:]
+	case len(words) == 2 && vector:
+		return []string{words[0] + "_" + words[1], words[1]}
+	}
+	return nil
+}
+
+// m68kSymbol returns the label an operand names: label, label(pc), (label).l,
+// #label, or label-base(an), an offset from a base that is in the register.
+// "" when it names none, as -198(a6) and (a0).
+func m68kSymbol(b *builder, operand *sitter.Node) string {
+	target := operand
 	switch target.Kind() {
 	case "offset_address":
 		target = target.ChildByFieldName("offset")
-	case "absolute_value":
+	case "absolute_value", "immediate_value":
 		target = target.ChildByFieldName("value")
+	}
+	if target != nil && target.Kind() == "binary_expression" && target.NamedChildCount() > 0 {
+		target = target.NamedChild(0)
 	}
 	if target == nil || target.Kind() != "symbol" {
 		return ""
@@ -619,10 +671,122 @@ func m68kTarget(b *builder, n *sitter.Node, sc scope) string {
 	if m68kLocal(name) || !isIdentifier(name) {
 		return ""
 	}
-	if mnemonic != "jsr" && mnemonic != "bsr" && sc.sym >= 0 && b.file.Symbols[sc.sym].Name == name {
-		return "" // A loop
-	}
 	return name
+}
+
+// m68kTarget returns the label an instruction calls or jumps to. A jump
+// counts as a call when it leaves the definition it is in: that is how one
+// routine continues in another. A call through a register with a named
+// offset, jsr _LVOAllocMem(a6), is a call of that name.
+//
+// Most calls of compiled code go through a register, and name nothing. Two
+// things still tell where they go, and are recorded here as references of
+// their own:
+//
+//   - the register was loaded with a label just before: lea Handler(pc),a0
+//     and jsr (a0). Code compiled from BCPL loads the routine into a4 and
+//     calls through a5, which holds the entry sequence: lea
+//     routine-base(a4),a4 and jsr (a5).
+//   - a comment after the call, or after the load, names the target (see
+//     m68kNamed). That is not checked by anything, so it is a may_call.
+func m68kTarget(b *builder, n *sitter.Node, sc scope) string {
+	switch n.Kind() {
+	case "label", "external_label":
+		// What a register holds does not carry over into the next routine
+		if name := m68kLabel(b, n); name != "" && !m68kLocal(name) {
+			b.loads = nil
+		}
+		return ""
+	case "instruction":
+	default:
+		return ""
+	}
+	mnemonic := strings.ToLower(b.text(n.ChildByFieldName("mnemonic")))
+	operands := n.ChildByFieldName("operands")
+	for reg, load := range b.loads {
+		if load.age++; load.age > m68kLoadSpan {
+			delete(b.loads, reg)
+		}
+	}
+	if operands == nil || operands.NamedChildCount() == 0 {
+		return ""
+	}
+	last := operands.NamedChild(operands.NamedChildCount() - 1)
+
+	if !m68kBranches[mnemonic] {
+		// Whatever is written to an address register replaces what it held
+		if operands.NamedChildCount() < 2 || last.Kind() != "address_register" {
+			return ""
+		}
+		reg := strings.ToLower(b.text(last))
+		delete(b.loads, reg)
+		if mnemonic != "lea" && mnemonic != "movea" && mnemonic != "move" {
+			return ""
+		}
+		source := operands.NamedChild(0)
+		load := &m68kLoad{relation: RelationCalls}
+		if name := m68kSymbol(b, source); name != "" && (mnemonic == "lea" || source.Kind() == "immediate_value") {
+			load.names = []string{name}
+		} else if mnemonic != "lea" {
+			load.names, load.relation = m68kNamed(m68kComment(b, n), false), RelationMayCall
+		}
+		if len(load.names) > 0 {
+			if b.loads == nil {
+				b.loads = make(map[string]*m68kLoad)
+			}
+			b.loads[reg] = load
+		}
+		return ""
+	}
+
+	if name := m68kSymbol(b, last); name != "" {
+		if mnemonic != "jsr" && mnemonic != "bsr" && sc.sym >= 0 && b.file.Symbols[sc.sym].Name == name {
+			return "" // A loop
+		}
+		return name
+	}
+	if mnemonic != "jsr" && mnemonic != "jmp" {
+		return ""
+	}
+
+	// Through a register
+	names, relation := []string(nil), RelationMayCall
+	if reg := m68kRegister(b, last); reg != "" {
+		load := b.loads[reg]
+		if load == nil && reg == "a5" {
+			load, reg = b.loads["a4"], "a4"
+		}
+		if load != nil {
+			names, relation = load.names, load.relation
+			delete(b.loads, reg)
+		}
+	}
+	if names == nil {
+		names = m68kNamed(m68kComment(b, n), last.Kind() == "offset_address")
+	}
+	for i, name := range names {
+		ref := Ref{Source: sc.sym, Relation: relation, Name: name}
+		// One word may be prose, and the second reading of two is a guess:
+		// they count when something has that name. What an operand names,
+		// and the label a comment spells out in full, is in the graph anyway.
+		if relation == RelationCalls || (i == 0 && len(names) > 1) || strings.Contains(name, "_") {
+			ref.External = name
+		}
+		b.addRef(ref)
+	}
+	return ""
+}
+
+// m68kRegister returns the address register an operand goes through with
+// nothing added, (a0), or ""
+func m68kRegister(b *builder, operand *sitter.Node) string {
+	if operand.Kind() != "indirect_address" || operand.NamedChildCount() != 1 {
+		return ""
+	}
+	if reg := operand.NamedChild(0); reg.Kind() == "address_register" {
+		return strings.ToLower(b.text(reg))
+	}
+	return ""
 }
 
 // Motorola 68000 assembly, in the syntax of the Amiga assemblers (vasm,

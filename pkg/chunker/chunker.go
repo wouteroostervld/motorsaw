@@ -275,6 +275,10 @@ type builder struct {
 	imports  map[string]importInfo
 	seen     map[Ref]bool
 	symFolds []*fold // Fold holding each symbol, parallel to file.Symbols
+
+	// Assembly: what the address registers were last loaded with, by
+	// register, while it can still be what a call goes through
+	loads map[string]*m68kLoad
 }
 
 func (b *builder) text(n *sitter.Node) string {
