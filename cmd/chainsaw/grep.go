@@ -19,7 +19,8 @@ Searches files with a Perl-compatible regular expression and shows, for each
 matching line, the definition it is in: the qualified name of the function,
 method, struct or interface. Searches the current directory when no path is
 given. Hidden directories and the excluded directories of your configuration
-are skipped.
+are skipped, and so is what git ignores (.gitignore, .git/info/exclude):
+what is built or downloaded. A path that is named is searched whatever it is.
 
 Options:
   -i               Ignore case
@@ -30,6 +31,7 @@ Options:
                    definitions); the count of all of them is still given
   --oneline        One match on a line, as path:line: [definition] text
   --width N        Cut lines to N characters
+  --no-ignore      Also search what git ignores
   --lang LANGUAGE  Read files as this language (bcpl, m68k, c, ...): the files
                    named, and under a directory those whose name does not say
                    what they are. Without it the name of a file tells, and
@@ -62,6 +64,7 @@ func handleGrep(args []string) {
 	oneline := flags.Bool("oneline", false, "")
 	width := flags.Int("width", 0, "")
 	lang := flags.String("lang", "", "")
+	noIgnore := flags.Bool("no-ignore", false, "")
 	given := parse(flags, args)
 	checkLanguage(*lang)
 
@@ -85,7 +88,7 @@ func handleGrep(args []string) {
 		IgnoreCase: *ignoreCase,
 		Fixed:      *fixed,
 		Word:       *word,
-		Exclude:    activeProfile().Exclude,
+		Walk:       newWalk(activeProfile(), !*noIgnore),
 		Language:   *lang,
 	})
 	if err != nil {

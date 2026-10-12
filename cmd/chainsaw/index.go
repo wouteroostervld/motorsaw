@@ -15,7 +15,6 @@ import (
 	"github.com/wouteroostervld/chainsaw/pkg/chunker"
 	"github.com/wouteroostervld/chainsaw/pkg/config"
 	"github.com/wouteroostervld/chainsaw/pkg/db"
-	"github.com/wouteroostervld/chainsaw/pkg/filter"
 	"github.com/wouteroostervld/chainsaw/pkg/indexer"
 )
 
@@ -45,6 +44,7 @@ needed for large trees or to index something elsewhere.
 Options:
   --force          Index files again even if they have not been modified
   --only KINDS     Only these kinds of index, comma-separated (graph, embeddings)
+  --no-ignore      Also index what git ignores (.gitignore, .git/info/exclude)
   -                Read more paths from standard input, one per line
   -0               With -, paths on standard input end in a NUL byte
 
@@ -65,6 +65,7 @@ func handleIndex(args []string) {
 	force := flags.Bool("force", false, "")
 	only := flags.String("only", "", "")
 	nul := flags.Bool("0", false, "")
+	noIgnore := flags.Bool("no-ignore", false, "")
 	flags.Parse(args)
 
 	if flags.NArg() == 0 {
@@ -111,6 +112,9 @@ func handleIndex(args []string) {
 	st, err := loadSettings()
 	if err != nil {
 		fail("%v", err)
+	}
+	if *noIgnore {
+		st.walk = newWalk(st.profile, false)
 	}
 	opts := syncOptions{force: *force, progress: os.Stdout, errors: os.Stderr}
 	if *only != "" {
@@ -221,7 +225,6 @@ func syncIndex(database *db.DB, st *settings, roots []string, opts syncOptions) 
 		}
 	}()
 
-	profile := st.profile
 	idx, err := st.indexer(database, opts.only...)
 	if err != nil {
 		return stats, err
@@ -289,7 +292,7 @@ func syncIndex(database *db.DB, st *settings, roots []string, opts syncOptions) 
 			if d.IsDir() {
 				// A directory named by hand is not limited to the included
 				// directories, but excluded ones are skipped as the daemon does
-				if path != root && skipped(root, path, profile.Exclude) {
+				if path != root && st.walk.SkipDir(root, path) {
 					return filepath.SkipDir
 				}
 				return nil
@@ -302,7 +305,7 @@ func syncIndex(database *db.DB, st *settings, roots []string, opts syncOptions) 
 			if _, held := known[path]; !held && !chunker.Recognised(path) {
 				return nil
 			}
-			if ok, _ := filter.ShouldIndexFile(path, profile.Blacklist, profile.Whitelist); !ok {
+			if st.walk.SkipFile(root, path) {
 				return nil
 			}
 			if info, err := d.Info(); err == nil {
@@ -427,23 +430,6 @@ func removedSummary(n int) string {
 		return "1 removed file detected"
 	}
 	return fmt.Sprintf("%d removed files detected", n)
-}
-
-// skipped reports whether a walk from root passes a directory by: it is
-// hidden or excluded, or inside one that is. The index walk, the daemon's
-// watches and its pruning all ask here, so that one does not keep what
-// another leaves out.
-func skipped(root, dir string, exclude []string) bool {
-	rel, err := filepath.Rel(root, dir)
-	if err != nil || rel == "." {
-		return false
-	}
-	for _, name := range strings.Split(rel, string(filepath.Separator)) {
-		if strings.HasPrefix(name, ".") {
-			return name != ".." // Not below root: not for this walk to say
-		}
-	}
-	return filter.Excluded(root, dir, exclude)
 }
 
 // autoIndex brings one kind of index up to date with the current directory

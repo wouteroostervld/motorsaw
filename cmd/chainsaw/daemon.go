@@ -19,7 +19,6 @@ import (
 	"github.com/wouteroostervld/chainsaw/pkg/chunker"
 	"github.com/wouteroostervld/chainsaw/pkg/config"
 	"github.com/wouteroostervld/chainsaw/pkg/db"
-	"github.com/wouteroostervld/chainsaw/pkg/filter"
 	"github.com/wouteroostervld/chainsaw/pkg/indexer"
 	"github.com/wouteroostervld/chainsaw/pkg/watcher"
 	"github.com/wouteroostervld/chainsaw/pkg/worker"
@@ -286,7 +285,7 @@ func (c *daemonConfig) ignores(path string) (ignored, included bool) {
 		included = true
 		// Included directories may lie inside each other, and a file is
 		// kept when the scan comes to it from any of them
-		if !skipped(root, dir, c.st.profile.Exclude) {
+		if !c.st.walk.SkipDir(root, dir) && !c.st.walk.SkipFile(root, path) {
 			walked = true
 			break
 		}
@@ -294,11 +293,7 @@ func (c *daemonConfig) ignores(path string) (ignored, included bool) {
 	if !included {
 		return false, false
 	}
-	if !walked {
-		return true, true
-	}
-	ok, _ := filter.ShouldIndexFile(path, c.st.profile.Blacklist, c.st.profile.Whitelist)
-	return !ok, true
+	return !walked, true
 }
 
 // daemon is what the running daemon is made of
@@ -344,8 +339,15 @@ func (d *daemon) changed(path string) {
 	cfg := d.current.Load()
 
 	// A project may have switched a kind of index on or off
-	if filepath.Base(path) == ".config.yaml" {
+	switch filepath.Base(path) {
+	case ".config.yaml":
 		cfg.st.kinds.Reset()
+		cfg.st.walk.Reset()
+		return
+	case ".gitignore":
+		// What it leaves out from now on; what it left in the index goes
+		// when the daemon prunes
+		cfg.st.walk.Reset()
 		return
 	}
 
@@ -461,7 +463,7 @@ func (d *daemon) watch(ctx context.Context, cfg *daemonConfig) (roots []string) 
 				return nil
 			case !entry.IsDir():
 				return nil
-			case path != root && skipped(root, path, cfg.st.profile.Exclude):
+			case path != root && cfg.st.walk.SkipDir(root, path):
 				passed++
 				return filepath.SkipDir
 			}

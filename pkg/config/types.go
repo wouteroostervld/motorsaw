@@ -17,6 +17,10 @@ type Profile struct {
 	Blacklist []string `yaml:"blacklist"` // Reject patterns (applied first)
 	Whitelist []string `yaml:"whitelist"` // Exception patterns (override blacklist)
 
+	// Whether what git ignores (.gitignore, .git/info/exclude) is left out of
+	// the index and of searches. On when not set.
+	Gitignore *bool `yaml:"gitignore,omitempty"`
+
 	// Which kinds of index are kept, by name (see DefaultIndex). A kind that
 	// is not named keeps its default.
 	Index map[string]bool `yaml:"index,omitempty"`
@@ -66,6 +70,10 @@ type LocalConfig struct {
 	Include   []string `yaml:"include,omitempty"`   // CLI only - additional search paths
 	Exclude   []string `yaml:"exclude,omitempty"`   // Additional directories to skip
 	Blacklist []string `yaml:"blacklist,omitempty"` // Additional file patterns to reject
+
+	// Whether what git ignores is left out below this directory, in place
+	// of what the profile says
+	Gitignore *bool `yaml:"gitignore,omitempty"`
 
 	// Kinds of index switched on or off for the files below this directory
 	Index map[string]bool `yaml:"index,omitempty"`

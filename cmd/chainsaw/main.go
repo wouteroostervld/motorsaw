@@ -10,6 +10,7 @@ import (
 	"github.com/wouteroostervld/chainsaw/pkg/config"
 	"github.com/wouteroostervld/chainsaw/pkg/db"
 	"github.com/wouteroostervld/chainsaw/pkg/embed"
+	"github.com/wouteroostervld/chainsaw/pkg/filter"
 	"github.com/wouteroostervld/chainsaw/pkg/indexer"
 )
 
@@ -25,10 +26,11 @@ Looking at code:
 
 Keeping the index:
   index <path>               Index the source files under a path
+  forget <path>              Make the index forget the files under a path; nothing on disk is touched
   status                     Show what is in the index, and which kinds of index are on here
   daemon start               Watch for changes and keep the index current
 
-Run a command with --help for its options.`
+Run a command with --help for its options; "chainsaw version" says which chainsaw this is.`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -54,11 +56,13 @@ func main() {
 		}
 	case "index":
 		handleIndex(os.Args[2:])
+	case "forget":
+		handleForget(os.Args[2:])
 	case "status":
 		handleStatus()
 	case "daemon":
 		handleDaemon()
-	case "version":
+	case "version", "-v", "-V", "--version":
 		fmt.Printf("chainsaw version %s\n", version)
 	case "help", "-h", "--help":
 		fmt.Println(usage)
@@ -131,6 +135,17 @@ func activeProfile() *config.Profile {
 type settings struct {
 	profile *config.Profile
 	kinds   *config.IndexResolver // Which kinds of index are on, by file
+	walk    *filter.Walk          // What a walk through a tree leaves out
+}
+
+// newWalk makes the rules for what a walk leaves out from a profile.
+// Without gitignore, what git ignores is not left out, whatever the profile
+// says.
+func newWalk(profile *config.Profile, gitignore bool) *filter.Walk {
+	if profile.Gitignore != nil && !*profile.Gitignore {
+		gitignore = false
+	}
+	return filter.NewWalk(profile.Exclude, profile.Blacklist, profile.Whitelist, gitignore)
 }
 
 func loadSettings() (*settings, error) {
@@ -142,7 +157,7 @@ func loadSettings() (*settings, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", configPath(), err)
 	}
-	return &settings{profile: profile, kinds: kinds}, nil
+	return &settings{profile: profile, kinds: kinds, walk: newWalk(profile, true)}, nil
 }
 
 // embedder returns the client for the configured embedding model, or nil

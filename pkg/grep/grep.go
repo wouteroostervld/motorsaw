@@ -30,6 +30,9 @@ type Options struct {
 	Fixed      bool     // The pattern is a literal string, not a regular expression
 	Word       bool     // The pattern must match whole words
 	Exclude    []string // Directories to skip, besides hidden ones (see filter.Excluded)
+	// Walk says what is left out under a directory, in place of Exclude:
+	// also what git ignores, and what a project excludes
+	Walk *filter.Walk
 	// Language is the language to read files as: those named among the
 	// paths, and under a directory those whose name does not say what they
 	// are. Empty to go by name and content.
@@ -89,6 +92,11 @@ func Search(pattern string, paths []string, opts Options) ([]File, error) {
 		}
 	}
 
+	walk := opts.Walk
+	if walk == nil {
+		walk = filter.NewWalk(opts.Exclude, nil, nil, false)
+	}
+
 	for _, root := range paths {
 		info, err := os.Stat(root)
 		if err != nil {
@@ -108,16 +116,16 @@ func Search(pattern string, paths []string, opts Options) ([]File, error) {
 			if err != nil {
 				return nil
 			}
-			name := d.Name()
+			abs := filepath.Join(from, path[len(root):])
 			if d.IsDir() {
 				// A directory named on the command line is searched even
-				// when it is hidden or excluded, or inside one that is
-				if path != root && (strings.HasPrefix(name, ".") || filter.Excluded(from, filepath.Join(from, path[len(root):]), opts.Exclude)) {
+				// when it is hidden, excluded or ignored, or inside one that is
+				if path != root && walk.SkipDir(from, abs) {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if d.Type().IsRegular() {
+			if d.Type().IsRegular() && !walk.GitIgnored(from, abs) {
 				search(path, false)
 			}
 			return nil
