@@ -289,8 +289,7 @@ func syncIndex(database *db.DB, st *settings, roots []string, opts syncOptions) 
 			if d.IsDir() {
 				// A directory named by hand is not limited to the included
 				// directories, but excluded ones are skipped as the daemon does
-				name := d.Name()
-				if path != root && (strings.HasPrefix(name, ".") || excluded(path, profile.Exclude)) {
+				if path != root && skipped(root, path, profile.Exclude) {
 					return filepath.SkipDir
 				}
 				return nil
@@ -313,7 +312,8 @@ func syncIndex(database *db.DB, st *settings, roots []string, opts syncOptions) 
 
 	// Files the index has that are gone from disk. One that is still there
 	// but was not walked, such as a file in an excluded directory that was
-	// indexed by name, stays.
+	// indexed by name, stays: only the daemon prunes those, and only under
+	// the included directories (see pruneIgnored).
 	for path, f := range known {
 		if seen[path] {
 			continue
@@ -424,10 +424,21 @@ func removedSummary(n int) string {
 	return fmt.Sprintf("%d removed files detected", n)
 }
 
-// excluded reports whether a directory is one the configuration says to skip
-func excluded(dir string, exclude []string) bool {
-	ok, _ := filter.ShouldIndexDirectory(dir, []string{dir}, exclude)
-	return !ok
+// skipped reports whether a walk from root passes a directory by: it is
+// hidden or excluded, or inside one that is. The index walk, the daemon's
+// watches and its pruning all ask here, so that one does not keep what
+// another leaves out.
+func skipped(root, dir string, exclude []string) bool {
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." {
+		return false
+	}
+	for _, name := range strings.Split(rel, string(filepath.Separator)) {
+		if strings.HasPrefix(name, ".") {
+			return name != ".." // Not below root: not for this walk to say
+		}
+	}
+	return filter.Excluded(root, dir, exclude)
 }
 
 // autoIndex brings one kind of index up to date with the current directory

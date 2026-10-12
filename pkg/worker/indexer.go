@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/wouteroostervld/chainsaw/pkg/db"
@@ -22,7 +23,7 @@ type Config struct {
 // IndexWorker processes files from the work queue
 type IndexWorker struct {
 	db           db.Database
-	indexer      *indexer.Indexer
+	indexer      atomic.Pointer[indexer.Indexer]
 	pollInterval time.Duration
 	batchSize    int
 	maxRetries   int
@@ -40,13 +41,20 @@ func NewIndexWorker(cfg *Config) *IndexWorker {
 		cfg.MaxRetries = 3
 	}
 
-	return &IndexWorker{
+	w := &IndexWorker{
 		db:           cfg.DB,
-		indexer:      cfg.Indexer,
 		pollInterval: cfg.PollInterval,
 		batchSize:    cfg.BatchSize,
 		maxRetries:   cfg.MaxRetries,
 	}
+	w.indexer.Store(cfg.Indexer)
+	return w
+}
+
+// SetIndexer makes the worker index with another indexer from the next file
+// on, as when the configuration was read again
+func (w *IndexWorker) SetIndexer(idx *indexer.Indexer) {
+	w.indexer.Store(idx)
 }
 
 // Start begins processing files from the queue
@@ -103,11 +111,12 @@ func (w *IndexWorker) processFile(ctx context.Context, file *db.File) {
 	}
 
 	slog.Debug("Processing file", "file", file.Path, "retry", file.RetryCount)
+	idx := w.indexer.Load()
 
 	// A file that is gone from disk has nothing left to index; the index
 	// forgets it
 	if _, err := os.Stat(file.Path); os.IsNotExist(err) {
-		if err := w.indexer.ForgetFile(file.ID, file.Path); err != nil {
+		if err := idx.ForgetFile(file.ID, file.Path); err != nil {
 			slog.Error("Failed to forget removed file", "file", file.Path, "error", err)
 			return
 		}
@@ -116,7 +125,7 @@ func (w *IndexWorker) processFile(ctx context.Context, file *db.File) {
 	}
 
 	// Do the actual indexing: every kind of index that is switched on for the file
-	if err := w.indexer.IndexFile(ctx, file.Path, false); err != nil {
+	if err := idx.IndexFile(ctx, file.Path, false); err != nil {
 		w.handleFailure(file, err)
 		return
 	}

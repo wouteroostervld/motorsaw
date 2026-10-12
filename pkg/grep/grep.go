@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/wouteroostervld/chainsaw/pkg/chunker"
+	"github.com/wouteroostervld/chainsaw/pkg/filter"
 	"github.com/wouteroostervld/chainsaw/pkg/pcre"
 )
 
@@ -28,7 +29,7 @@ type Options struct {
 	IgnoreCase bool
 	Fixed      bool     // The pattern is a literal string, not a regular expression
 	Word       bool     // The pattern must match whole words
-	Exclude    []string // Names of directories to skip, besides hidden ones
+	Exclude    []string // Directories to skip, besides hidden ones (see filter.Excluded)
 }
 
 // Line is a line that matched
@@ -71,11 +72,6 @@ func Search(pattern string, paths []string, opts Options) ([]File, error) {
 	}
 	defer re.Close()
 
-	exclude := make(map[string]bool, len(opts.Exclude))
-	for _, name := range opts.Exclude {
-		exclude[strings.TrimSuffix(name, "/")] = true
-	}
-
 	// Matching is quick and done in order, with the one compiled pattern.
 	// Finding the definitions around the matches means parsing each file
 	// that has any, which is the slow part and is done in parallel.
@@ -91,6 +87,11 @@ func Search(pattern string, paths []string, opts Options) ([]File, error) {
 		if err != nil {
 			return nil, err
 		}
+		// Excluded directories are told by their absolute path
+		from, err := filepath.Abs(root)
+		if err != nil {
+			return nil, err
+		}
 		if !info.IsDir() {
 			// A file named on the command line is searched whatever it is
 			search(root)
@@ -102,7 +103,9 @@ func Search(pattern string, paths []string, opts Options) ([]File, error) {
 			}
 			name := d.Name()
 			if d.IsDir() {
-				if path != root && (strings.HasPrefix(name, ".") || exclude[name]) {
+				// A directory named on the command line is searched even
+				// when it is hidden or excluded, or inside one that is
+				if path != root && (strings.HasPrefix(name, ".") || filter.Excluded(from, filepath.Join(from, path[len(root):]), opts.Exclude)) {
 					return filepath.SkipDir
 				}
 				return nil

@@ -140,6 +140,11 @@ Chainsaw is a **GraphRAG** (Graph-Retrieval Augmented Generation) system that co
    - Persistent work queue
    - Two-pass indexing (embeddings + graph)
    - Concurrent processing with configurable workers
+   - At startup and on SIGHUP (`daemon.reload` in `cmd/chainsaw/daemon.go`,
+     the warm restart): reads the configuration (SIGHUP only; at startup it
+     has just been read), sets the watches, prunes the files the
+     configuration ignores from the index, scans. What else is to happen on
+     SIGHUP goes there.
 
 3. **Init Mode** (`chainsaw init`)
    - Database schema creation
