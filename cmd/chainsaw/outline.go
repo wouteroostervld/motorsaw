@@ -25,6 +25,9 @@ Options:
   --body NAME      Show this definition in full and nothing else. May be given
                    more than once.
   --symbols        List the definitions instead: type, name, lines, signature
+  --lang LANGUAGE  Read the files as this language, whatever their names say
+                   (bcpl, m68k, c, ...). Without it the name of a file tells,
+                   and for a file without an extension what is in it.
   --width N        Cut lines to N characters
 
 Options may stand before or after the files.
@@ -48,6 +51,7 @@ func handleOutline(args []string) {
 	flags.Var(&expand, "expand", "")
 	flags.Var(&body, "body", "")
 	symbols := flags.Bool("symbols", false, "")
+	lang := flags.String("lang", "", "")
 	width := flags.Int("width", 0, "")
 	given := parse(flags, args)
 
@@ -55,6 +59,7 @@ func handleOutline(args []string) {
 		fmt.Println(outlineUsage)
 		os.Exit(1)
 	}
+	checkLanguage(*lang)
 	out, done := output(*width)
 	defer done()
 
@@ -70,9 +75,11 @@ func handleOutline(args []string) {
 		if err != nil {
 			fail("%v", err)
 		}
-		f, ok := chunker.Parse(path, content, 0)
+		f, ok := parseFile(*lang, path, content)
 		if !ok {
-			fail("%s is not in a language chainsaw can parse", name)
+			done()
+			fail("%s is not in a language chainsaw can parse.\nIf you know what it is, say so with --lang: one of %s",
+				name, strings.Join(chunker.Languages(), ", "))
 		}
 
 		for _, n := range body {
@@ -131,7 +138,7 @@ func chunksNamed(f *chunker.File, name string) []int {
 	}
 	named := make(map[int]bool)
 	for _, s := range f.Symbols {
-		if s.QualifiedName() == name || s.Name == name {
+		if s.QualifiedName() == name || s.Name == name || (f.FoldCase && strings.EqualFold(s.Name, name)) {
 			named[f.ChunkAt(s.StartLine)] = true
 		}
 	}
@@ -148,4 +155,26 @@ func chunksNamed(f *chunker.File, name string) []int {
 		}
 	}
 	return chunks
+}
+
+// parseFile parses a file in the language it is said to be in, or in the one
+// its name and content show when none is said
+func parseFile(lang, path string, content []byte) (*chunker.File, bool) {
+	if lang != "" {
+		return chunker.ParseAs(lang, path, content, 0)
+	}
+	return chunker.Parse(path, content, 0)
+}
+
+// checkLanguage ends the command when --lang names a language that cannot be parsed
+func checkLanguage(lang string) {
+	if lang == "" {
+		return
+	}
+	for _, known := range chunker.Languages() {
+		if strings.EqualFold(lang, known) {
+			return
+		}
+	}
+	fail("--lang %s: not a language chainsaw can parse; it parses %s", lang, strings.Join(chunker.Languages(), ", "))
 }

@@ -350,11 +350,11 @@ func (d *daemon) changed(path string) {
 	}
 
 	// Only what can be parsed has anything to index
-	if !chunker.Supported(path) {
-		return
-	}
 	if ignored, included := cfg.ignores(path); ignored || !included {
 		slog.Debug("Filtered out file", "file", path)
+		return
+	}
+	if !chunker.Recognised(path) {
 		return
 	}
 

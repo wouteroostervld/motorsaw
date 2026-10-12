@@ -202,3 +202,23 @@ func TestSearch_ExcludedDirectories(t *testing.T) {
 		}
 	}
 }
+
+func TestSearch_Language(t *testing.T) {
+	dir := t.TempDir()
+	// Nothing in the name or the content says what this is
+	path := filepath.Join(dir, "fragment")
+	if err := os.WriteFile(path, []byte("LET f(x) =\n   x + 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := Search("x . 1", []string{path}, Options{})
+	if err != nil || len(files) != 1 || files[0].Groups[0].Symbol != "" {
+		t.Fatalf("without a language: %+v, %v; want the match outside any definition", files, err)
+	}
+	for _, paths := range [][]string{{path}, {dir}} {
+		files, err = Search("x . 1", paths, Options{Language: "bcpl"})
+		if err != nil || len(files) != 1 || files[0].Groups[0].Symbol != "f" {
+			t.Errorf("as BCPL, from %v: %+v, %v; want the match in f", paths, files, err)
+		}
+	}
+}

@@ -122,6 +122,36 @@ func TestSyncIndex(t *testing.T) {
 	}
 }
 
+func TestSyncIndex_NoExtension(t *testing.T) {
+	dir, database := project(t)
+
+	// BCPL from before files had extensions is told by what is in it; other
+	// files without one are passed over
+	for name, content := range map[string]string{
+		"bcp/mcg1": "SECTION \"MCG1\"\n\nLET start() BE\n$( stop(0)\n$)\n",
+		"Makefile": "all:\n\techo $(CC)\n",
+		"LICENSE":  "Do as you like.\n",
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := sync(t, database, dir, syncOptions{}); got != (syncStats{indexed: 3}) {
+		t.Fatalf("first run = %+v, want a.py, sub/b.py and bcp/mcg1 indexed", got)
+	}
+	if got := sync(t, database, dir, syncOptions{}); got != (syncStats{unchanged: 3}) {
+		t.Errorf("second run = %+v, want 3 unchanged", got)
+	}
+	// Named by hand it is taken the same way
+	if got := sync(t, database, filepath.Join(dir, "LICENSE"), syncOptions{}); got != (syncStats{skipped: 1}) {
+		t.Errorf("a text file named by hand = %+v, want it passed over", got)
+	}
+}
+
 func TestSyncIndex_Limit(t *testing.T) {
 	dir, database := project(t)
 

@@ -158,6 +158,23 @@ func Other() int {
 	}
 }
 
+func TestChunksNamed_AnyCase(t *testing.T) {
+	// In the BCPL of the 1980s FormTree and formtree are one name
+	source := "LET FormTree(v) BE\n$( a := 1\n   b := 2\n   c := 3\n   d := 4\n$)\n"
+	f, ok := chunker.Parse("syn4", []byte(source), 0)
+	if !ok {
+		t.Fatal("not parsed")
+	}
+	if chunks := chunksNamed(f, "formtree"); len(chunks) != 1 || f.Chunks[chunks[0]].StartLine != 1 {
+		t.Errorf("chunksNamed(formtree) = %v", chunks)
+	}
+	// Elsewhere they are two
+	g, _ := chunker.Parse("p.go", []byte("package p\n\nfunc Long() int {\n\ta := 1\n\tb := 2\n\tc := 3\n\treturn a + b + c\n}\n"), 0)
+	if chunks := chunksNamed(g, "long"); len(chunks) != 0 {
+		t.Errorf("chunksNamed(long) in Go = %v", chunks)
+	}
+}
+
 func TestCell(t *testing.T) {
 	for _, tt := range []struct {
 		value any

@@ -273,7 +273,7 @@ func syncIndex(database *db.DB, st *settings, roots []string, opts syncOptions) 
 		if !info.IsDir() {
 			// A file named directly is indexed whatever the configuration
 			// excludes, as long as it can be parsed
-			if chunker.Supported(root) {
+			if chunker.Recognised(root) {
 				check(root, info)
 			} else if !seen[root] {
 				seen[root] = true
@@ -294,7 +294,12 @@ func syncIndex(database *db.DB, st *settings, roots []string, opts syncOptions) 
 				}
 				return nil
 			}
-			if !d.Type().IsRegular() || !chunker.Supported(path) {
+			if !d.Type().IsRegular() {
+				return nil
+			}
+			// What the index holds was recognised before; a file without
+			// an extension has to be read to tell, which is done once
+			if _, held := known[path]; !held && !chunker.Recognised(path) {
 				return nil
 			}
 			if ok, _ := filter.ShouldIndexFile(path, profile.Blacklist, profile.Whitelist); !ok {

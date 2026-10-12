@@ -30,6 +30,10 @@ Options:
                    definitions); the count of all of them is still given
   --oneline        One match on a line, as path:line: [definition] text
   --width N        Cut lines to N characters
+  --lang LANGUAGE  Read files as this language (bcpl, m68k, c, ...): the files
+                   named, and under a directory those whose name does not say
+                   what they are. Without it the name of a file tells, and
+                   for a file without an extension what is in it.
   --expand body    Show the whole definition around each match
   --expand file    Show each file folded to signatures, with those definitions in full
   --expand calls   As file, and also what those definitions call. This uses the
@@ -57,7 +61,9 @@ func handleGrep(args []string) {
 	limit := flags.Int("limit", 0, "")
 	oneline := flags.Bool("oneline", false, "")
 	width := flags.Int("width", 0, "")
+	lang := flags.String("lang", "", "")
 	given := parse(flags, args)
+	checkLanguage(*lang)
 
 	if len(given) < 1 {
 		fmt.Println(grepUsage)
@@ -80,6 +86,7 @@ func handleGrep(args []string) {
 		Fixed:      *fixed,
 		Word:       *word,
 		Exclude:    activeProfile().Exclude,
+		Language:   *lang,
 	})
 	if err != nil {
 		fail("%v", err)

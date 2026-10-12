@@ -30,6 +30,10 @@ type Options struct {
 	Fixed      bool     // The pattern is a literal string, not a regular expression
 	Word       bool     // The pattern must match whole words
 	Exclude    []string // Directories to skip, besides hidden ones (see filter.Excluded)
+	// Language is the language to read files as: those named among the
+	// paths, and under a directory those whose name does not say what they
+	// are. Empty to go by name and content.
+	Language string
 }
 
 // Line is a line that matched
@@ -76,8 +80,11 @@ func Search(pattern string, paths []string, opts Options) ([]File, error) {
 	// Finding the definitions around the matches means parsing each file
 	// that has any, which is the slow part and is done in parallel.
 	var found []*candidate
-	search := func(path string) {
+	search := func(path string, named bool) {
 		if c := matchFile(re, path); c != nil {
+			if opts.Language != "" && (named || !chunker.Supported(path)) {
+				c.language = opts.Language
+			}
 			found = append(found, c)
 		}
 	}
@@ -94,7 +101,7 @@ func Search(pattern string, paths []string, opts Options) ([]File, error) {
 		}
 		if !info.IsDir() {
 			// A file named on the command line is searched whatever it is
-			search(root)
+			search(root, true)
 			continue
 		}
 		err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -111,7 +118,7 @@ func Search(pattern string, paths []string, opts Options) ([]File, error) {
 				return nil
 			}
 			if d.Type().IsRegular() {
-				search(path)
+				search(path, false)
 			}
 			return nil
 		})
@@ -142,9 +149,10 @@ func Search(pattern string, paths []string, opts Options) ([]File, error) {
 
 // candidate is a file with matches, before its definitions are known
 type candidate struct {
-	path    string
-	content []byte
-	numbers []int // The lines with a match, in order
+	path     string
+	language string // What to read it as; empty to go by name and content
+	content  []byte
+	numbers  []int // The lines with a match, in order
 }
 
 // matchFile returns the lines of a file that match; nil when there are none
@@ -183,7 +191,12 @@ func matchFile(re *pcre.Regexp, path string) *candidate {
 // around them
 func (c *candidate) group() File {
 	lines := bytes.Split(c.content, []byte{'\n'})
-	parsed, _ := chunker.Parse(c.path, c.content, 0)
+	var parsed *chunker.File
+	if c.language != "" {
+		parsed, _ = chunker.ParseAs(c.language, c.path, c.content, 0)
+	} else {
+		parsed, _ = chunker.Parse(c.path, c.content, 0)
+	}
 
 	file := File{Path: c.path}
 	groups := make(map[int]int) // Symbol index -> index into file.Groups

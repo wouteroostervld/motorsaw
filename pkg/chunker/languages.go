@@ -1,6 +1,8 @@
 package chunker
 
 import (
+	"io"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -78,6 +80,10 @@ type langSpec struct {
 	dataKinds  set                                   // Kinds that make what a label names data and not code
 	// target names the label an instruction calls or jumps to; "" when it does neither
 	target func(b *builder, n *sitter.Node, sc scope) string
+
+	// parse parses the source when it needs more than the grammar alone, and
+	// reports whether names are the same whatever their case
+	parse func(p *sitter.Parser, src []byte) (*sitter.Tree, bool)
 
 	once sync.Once
 	lang *sitter.Language
@@ -534,7 +540,10 @@ var bcplSpec = &langSpec{
 	defs: map[string]defKind{
 		"function_definition": function,
 		"routine_definition":  function,
+		"constant_definition": {etype: TypeConstant},
 	},
+	parse:       bcplParse,
+	describe:    bcplDescribe,
 	groups:      setOf("let_declaration"),
 	leading:     setOf("comment", "block_comment"),
 	calls:       map[string]string{"call_expression": "function"},
@@ -542,6 +551,18 @@ var bcplSpec = &langSpec{
 	imports: func(b *builder, n *sitter.Node) {
 		b.addImport("", b.text(n.ChildByFieldName("path")), "")
 	},
+}
+
+// bcplDescribe tells the entries of MANIFEST, which are constants, from those
+// of GLOBAL and STATIC, which are cells that hold a value or a routine
+func bcplDescribe(b *builder, n *sitter.Node, d *def) bool {
+	if n.Kind() != "constant_definition" {
+		return true
+	}
+	if p := n.Parent(); p != nil && p.Kind() != "manifest_declaration" {
+		d.etype = TypeVariable
+	}
+	return true
 }
 
 // m68kLocal reports whether a label is local to the global label above it:
@@ -703,8 +724,49 @@ func init() {
 	extensions[".tsx"] = tsx
 }
 
-func specFor(path string) *langSpec {
-	return extensions[strings.ToLower(filepath.Ext(path))]
+// languages are the specs by the name of their language
+var languages = map[string]*langSpec{}
+
+func init() {
+	for _, spec := range extensions {
+		languages[spec.name] = spec
+	}
+}
+
+// ambiguous are the extensions that more than one language uses. The spec
+// in extensions is what such a file is, unless its content says otherwise.
+var ambiguous = setOf(".h")
+
+// specFor tells the language of a file: by its extension, and by its content
+// when it has none or one that says too little. Files of BCPL from before
+// there were extensions have none, and its headers share .h with C.
+func specFor(path string, src []byte) *langSpec {
+	ext := strings.ToLower(filepath.Ext(path))
+	spec := extensions[ext]
+	if (ext == "" || ambiguous[ext]) && looksLikeBCPL(src) {
+		return bcplSpec
+	}
+	return spec
+}
+
+// Recognised reports whether a file on disk is one that can be parsed. For
+// most the name says so; one without an extension is read to see, a little
+// of it.
+func Recognised(path string) bool {
+	if Supported(path) {
+		return true
+	}
+	if filepath.Ext(path) != "" {
+		return false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, sniffSize)
+	n, _ := io.ReadFull(f, head)
+	return specFor(path, head[:n]) != nil
 }
 
 // findKind returns the first node of the given kind at or below n
