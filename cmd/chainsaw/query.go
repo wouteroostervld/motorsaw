@@ -103,8 +103,9 @@ func handleQuery(args []string) {
 
 	database := openDB()
 	defer database.Close()
+	stale := ""
 	if !*noIndex {
-		autoIndex(database, cwd, config.IndexGraph)
+		stale = autoIndex(database, cwd, config.IndexGraph)
 	}
 
 	rows, err := database.RawQuery(result.SQL, result.Args...)
@@ -177,12 +178,20 @@ func handleQuery(args []string) {
 	case *oneline:
 	case count == 0:
 		fmt.Fprintln(out, "results: []")
-		return
 	default:
 		fmt.Fprintf(out, "total: %d\n", count)
 		if stopped != "" {
 			fmt.Fprintln(out, stopped)
 		}
+	}
+	// Said on standard error already, and here again where the results are
+	// read: an answer from a stale index looks like any other. Not among
+	// rows that are one a line, which are for another program.
+	if stale != "" && !*oneline {
+		fmt.Fprintf(out, "warning: %s\n", stale)
+	}
+	if count == 0 {
+		return
 	}
 
 	if mode != "" && len(hits) > 0 {

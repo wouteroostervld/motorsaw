@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,6 +151,39 @@ func TestSyncIndex_NoExtension(t *testing.T) {
 	// Named by hand it is taken the same way
 	if got := sync(t, database, filepath.Join(dir, "LICENSE"), syncOptions{}); got != (syncStats{skipped: 1}) {
 		t.Errorf("a text file named by hand = %+v, want it passed over", got)
+	}
+}
+
+func TestSyncOptions_Write(t *testing.T) {
+	busy := errors.New("failed to insert entity: database is locked")
+
+	// Another process is writing: asked again until it is done
+	tries := 0
+	var told bytes.Buffer
+	opts := syncOptions{patience: time.Minute, progress: &told}
+	err := opts.write(func() error {
+		if tries++; tries < 3 {
+			return busy
+		}
+		return nil
+	})
+	if err != nil || tries != 3 {
+		t.Errorf("write = %v after %d tries, want it done at the third", err, tries)
+	}
+	if got := strings.Count(told.String(), "waiting"); got != 1 {
+		t.Errorf("said %d times that it waits, want once:\n%s", got, told.String())
+	}
+
+	// Not for ever
+	tries = 0
+	if err := (syncOptions{}).write(func() error { tries++; return busy }); !db.IsBusy(err) || tries != 2 {
+		t.Errorf("write without patience = %v after %d tries, want the error after one more try", err, tries)
+	}
+	// And any other error is not waited for
+	tries = 0
+	other := errors.New("no such file")
+	if err := opts.write(func() error { tries++; return other }); err != other || tries != 1 {
+		t.Errorf("write = %v after %d tries, want the error at once", err, tries)
 	}
 }
 

@@ -575,7 +575,7 @@ func pruneIgnored(ctx context.Context, database *db.DB, cfg *daemonConfig) (stat
 func startupScan(ctx context.Context, database *db.DB, st *settings, roots []string, kinds []string) {
 	slog.Info("Scan started", "kinds", kinds, "dirs", roots)
 	start := time.Now()
-	stats, err := syncIndex(database, st, roots, syncOptions{ctx: ctx, only: kinds, log: slog.Default()})
+	stats, err := syncIndex(database, st, roots, syncOptions{ctx: ctx, only: kinds, log: slog.Default(), patience: indexPatience})
 	result := []any{
 		"took", time.Since(start).Round(time.Millisecond), "indexed", stats.indexed, "unchanged", stats.unchanged,
 		"removed", stats.removed, "failed", stats.failed,

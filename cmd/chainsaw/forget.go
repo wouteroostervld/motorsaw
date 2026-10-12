@@ -127,7 +127,11 @@ func forget(database *db.DB, st *settings, roots []string, opts forgetOptions) (
 	// The references to what goes are resolved again once, not once a file
 	resolve := database.DeferResolving(resolveEvery)
 	defer func() {
-		if resolveErr := resolve(); err == nil {
+		resolveErr := resolve()
+		if db.IsBusy(resolveErr) {
+			resolveErr = syncOptions{progress: opts.progress, patience: indexPatience}.write(database.ResolveSymbols)
+		}
+		if err == nil {
 			err = resolveErr
 		}
 	}()
@@ -164,7 +168,9 @@ func forget(database *db.DB, st *settings, roots []string, opts forgetOptions) (
 				stats.byDir[topDir(root, path)]++
 				continue
 			}
-			if err := idx.ForgetFile(indexed[path].ID, path); err != nil {
+			// Another chainsaw may be writing: the daemon in its scan
+			wait := syncOptions{progress: opts.progress, patience: indexPatience}
+			if err := wait.write(func() error { return idx.ForgetFile(indexed[path].ID, path) }); err != nil {
 				return stats, err
 			}
 			if opts.progress != nil && time.Since(reported) > 5*time.Second {
