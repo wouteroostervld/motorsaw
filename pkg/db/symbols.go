@@ -15,6 +15,9 @@ const (
 	EntityTypeExternal = "EXTERNAL" // Call target that is not defined in any indexed file
 )
 
+// dataTypes are the entity types of definitions that are not code
+var dataTypes = map[string]bool{"CONSTANT": true, "VARIABLE": true}
+
 const (
 	relationDefines = "defines"
 	relationImports = "imports"
@@ -592,8 +595,14 @@ func selectTargets(r pendingRef, cands []candidate, follows []string) ([]int64, 
 		return ids, weightByName
 	}
 
-	// A plain call refers to a function or type, not a method
-	ids, sameDir := nearest(r.path, filter(func(c candidate) bool { return c.container == "" }))
+	// A plain call refers to a function or type, not a method. It refers to
+	// a constant or a variable only when nothing else has the name: in BCPL
+	// a routine is declared as a global in a header and defined elsewhere.
+	plain := filter(func(c candidate) bool { return c.container == "" && !dataTypes[c.entityType] })
+	if len(plain) == 0 {
+		plain = filter(func(c candidate) bool { return c.container == "" })
+	}
+	ids, sameDir := nearest(r.path, plain)
 	if sameDir {
 		return ids, weightExact
 	}
@@ -676,11 +685,12 @@ func (db *DB) SetProjectFollows(root string, dirs []string) error {
 // matchesImport reports whether a file can be what an import path ending in
 // base refers to: the file itself (utils.py) or a file in that directory (db/x.go).
 func matchesImport(path, base string) bool {
+	// Whatever the case: GET "LIBHDR" names libhdr.h, and file systems differ
 	file := filepath.Base(path)
-	if strings.TrimSuffix(file, filepath.Ext(file)) == base {
+	if strings.EqualFold(strings.TrimSuffix(file, filepath.Ext(file)), base) {
 		return true
 	}
-	return filepath.Base(filepath.Dir(path)) == base
+	return strings.EqualFold(filepath.Base(filepath.Dir(path)), base)
 }
 
 // nearest returns the candidates closest to the referencing file: in the same

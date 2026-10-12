@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/wouteroostervld/chainsaw/pkg/chunker"
@@ -111,11 +112,20 @@ func (g *Graph) follow(root string) error {
 // storeSymbols stores the definitions, calls and imports of a parsed file as
 // graph entities and edges
 func (g *Graph) storeSymbols(fileID int64, filePath string, parsed *chunker.File, chunkIDs []int64) error {
+	// Where case does not tell names apart they are kept in lower case, so
+	// that a call of CGERROR finds the definition of cgerror
+	name := func(s string) string {
+		if parsed.FoldCase {
+			return strings.ToLower(s)
+		}
+		return s
+	}
+
 	// The module comes first; it defines everything at file level and is the
 	// source of imports and of calls outside any definition
 	defs := make([]db.SymbolDef, 0, len(parsed.Symbols)+1)
 	defs = append(defs, db.SymbolDef{
-		Name:       parsed.Module,
+		Name:       name(parsed.Module),
 		EntityType: chunker.TypePackage,
 		ChunkID:    chunkIDs[0],
 		Parent:     -1,
@@ -124,7 +134,7 @@ func (g *Graph) storeSymbols(fileID int64, filePath string, parsed *chunker.File
 	})
 	for _, sym := range parsed.Symbols {
 		defs = append(defs, db.SymbolDef{
-			Name:       sym.Name,
+			Name:       name(sym.Name),
 			Container:  sym.Container,
 			Signature:  sym.Signature,
 			StartLine:  sym.StartLine,
@@ -136,17 +146,27 @@ func (g *Graph) storeSymbols(fileID int64, filePath string, parsed *chunker.File
 	}
 
 	refs := make([]db.SymbolRef, 0, len(parsed.Refs))
+	seen := make(map[db.SymbolRef]bool)
 	for _, ref := range parsed.Refs {
-		refs = append(refs, db.SymbolRef{
+		r := db.SymbolRef{
 			Source:       ref.Source + 1,
 			RelationType: ref.Relation,
-			Name:         ref.Name,
+			Name:         name(ref.Name),
 			Container:    ref.Container,
-			ImportBase:   ref.ImportBase,
+			ImportBase:   name(ref.ImportBase),
 			TargetPath:   ref.TargetPath,
 			ExternalName: ref.External,
 			Member:       ref.Member,
-		})
+		}
+		if ref.Relation == chunker.RelationCalls || ref.Relation == chunker.RelationMayCall {
+			r.ExternalName = name(ref.External)
+		}
+		// Two spellings of one name are one reference
+		if seen[r] {
+			continue
+		}
+		seen[r] = true
+		refs = append(refs, r)
 	}
 
 	root := g.Projects.Root(filePath)

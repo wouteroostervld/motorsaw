@@ -128,6 +128,48 @@ func TestIndexFile_Markup(t *testing.T) {
 	}
 }
 
+func TestIndexFile_FoldsCase(t *testing.T) {
+	// BCPL of the 1980s, in a file without an extension: CGERROR and cgerror
+	// are one name, and are stored as one
+	testFile := filepath.Join(t.TempDir(), "MCG1")
+	content := `SECTION "MCG1"
+GET "CGHDR"
+
+LET CgStart(n) BE
+$( CGERROR(n)
+   cgerror(n+1)
+$)
+
+AND cgerror(n) BE
+$( abort(n)
+$)
+`
+	if err := os.WriteFile(testFile, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mockDB := NewMockDatabase()
+	if err := New(mockDB, nil, NewGraph(mockDB)).IndexFile(context.Background(), testFile, false); err != nil {
+		t.Fatalf("IndexFile failed: %v", err)
+	}
+	var defs, refs []string
+	for _, d := range mockDB.SymbolDefs {
+		defs = append(defs, d.EntityType+" "+d.Name)
+	}
+	for _, r := range mockDB.SymbolRefs {
+		refs = append(refs, r.RelationType+" "+r.Name)
+	}
+	if got, want := strings.Join(defs, ", "), "PACKAGE mcg1, FUNCTION cgstart, FUNCTION cgerror"; got != want {
+		t.Errorf("definitions: %s; want %s", got, want)
+	}
+	if got, want := strings.Join(refs, ", "), "imports cghdr, calls cgerror, calls abort"; got != want {
+		t.Errorf("references: %s; want %s", got, want)
+	}
+	if sig := mockDB.SymbolDefs[1].Signature; sig != "LET CgStart(n) BE" {
+		t.Errorf("signature %q, want it as written", sig)
+	}
+}
+
 // source writes a small source file and returns its path
 func source(t *testing.T) string {
 	t.Helper()
