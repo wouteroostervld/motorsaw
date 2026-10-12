@@ -130,12 +130,27 @@ In 68000 assembly (`.s`, `.asm`, `.i`, in the syntax of the Amiga assemblers)
 a definition is a global label and the lines up to the next one: a `FUNCTION`
 when code follows the label, a `STRUCT` when data does. Macros are functions
 too. `jsr` and `bsr` are calls, and so is a jump or branch to another global
-label; `jsr _LVOAllocMem(a6)` is a call of `_LVOAllocMem`. Assembly for
-another processor in a file with one of these extensions is left alone.
+label; `jsr _LVOAllocMem(a6)` is a call of `_LVOAllocMem`. A call through a
+register is followed when the register was loaded with a label just before
+(`lea Handler(pc),a0` and `jsr (a0)`; in compiled BCPL `lea routine-base(a4),a4`
+and `jsr (a5)`), and is a `may_call` when only a comment says where it goes:
+`jsr -198(a6) ; exec AllocMem`, `movea.l 328(a2),a4 ; G82 dos_g82_UnLoadSeg`.
+Assembly for another processor in a file with one of these extensions is
+left alone.
 
 In BCPL (`.b`, `.bcpl`) a definition is a function or a routine, whether it is
-introduced by `LET` or by `AND`, and a `GET` is an import. Reserved words are
-upper case. Headers named `.h` are read as C++.
+introduced by `LET` or by `AND` and also inside another, and a `GET` is an
+import. The entries of `MANIFEST` are `CONSTANT`s and those of `GLOBAL` and
+`STATIC` are `VARIABLE`s. Both dialects are read: that of the compiler of
+today, and that of TRIPOS and AmigaDOS, which brackets with `$(` and `$)`,
+tells no cases apart (`CGERROR` and `cgerror` are one routine, and the graph
+has it as `cgerror`) and has conditional compilation (`$$TAG := TRUE`,
+`$<TAG ... $>TAG`). See [BCPL](MANUAL.md#bcpl) in the manual.
+
+A file is told by its extension. One without an extension, and a `.h`, is
+BCPL when its content shows it: that is how the sources of the 1980s and the
+headers of today are named. Anything else is said with `--lang`:
+`chainsaw outline --lang bcpl fragment`.
 
 ## Installation
 

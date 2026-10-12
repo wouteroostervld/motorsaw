@@ -68,12 +68,15 @@ one.
 | `--limit N` | Show the first N matching lines only; with `-s`, the first N definitions |
 | `--oneline` | One match on a line: `path:line: [definition] text` |
 | `--width N` | Cut lines to N characters |
+| `--no-ignore` | Also search what git ignores |
+| `--lang LANGUAGE` | Read files as this language, see [outline](#outline) |
 | `--expand body\|file\|calls` | Show the code, see [below](#showing-code---expand) |
 
-Without a path the current directory is searched. Hidden directories and the
-`exclude` directories of your configuration are skipped, as they are by
-`chainsaw index` and the daemon; a file or directory named explicitly is
-always searched. `^` and `$` match at line ends. No index is
+Without a path the current directory is searched. Hidden directories, the
+`exclude` directories of your configuration and what git ignores are
+skipped, as they are by `chainsaw index` and the daemon (see [What is left
+out](#what-is-left-out)); a file or directory named explicitly is always
+searched. `^` and `$` match at line ends. No index is
 needed, so results are always current.
 
 `-s` is the quick way to answer "which functions touch this": it is the list
@@ -133,6 +136,18 @@ functions. Markdown folds along its headings.
 | `--body NAME` | Show this definition in full and nothing else. Repeatable. |
 | `--symbols` | List the definitions instead: type, name, lines, signature |
 | `--width N` | Cut lines to N characters |
+| `--lang LANGUAGE` | Read the files as this language, whatever their names say |
+
+The language of a file is told by its extension. A file without one, and a
+`.h`, is read as BCPL when its content shows that it is. Where neither says,
+name the language: `chainsaw outline --lang bcpl fragment`. `grep --lang`
+does the same for the files it is given by name, and under a directory for
+those whose name does not say what they are. The languages are `bcpl`, `c`,
+`cpp`, `go`, `html`, `java`, `javascript`, `m68k`, `markdown`, `python`,
+`ruby`, `rust`, `tsx`, `typescript` and `xml`.
+
+A name that is not in the file is an error on standard error, with exit
+status 1.
 
 `--expand` shows a definition in its place in the folded file; `--body` shows
 the definition alone, under its file and lines:
@@ -325,6 +340,9 @@ chainsaw query --expand file 'MATCH (f)-[:calls]->(t {name: "nearest"}) RETURN f
 chainsaw index <path>...      # parse and record files, or the files under directories
 chainsaw index --force <path> # also files that have not changed
 chainsaw index --only graph . # one kind of index only (graph, embeddings)
+chainsaw index --no-ignore .  # also what git ignores
+chainsaw forget <path>...     # make the index forget the files under a path
+chainsaw forget --ignored     # ... or only what is left out here by now
 chainsaw status               # what is in the index
 chainsaw daemon start         # watch the configured directories for changes
 ```
@@ -381,8 +399,9 @@ still only built where it is switched on. Files that change while the daemon
 runs are indexed in every kind that is on for them, whatever the scan does.
 
 Before it scans, the daemon makes the index forget the files under the
-`include` directories that your configuration ignores: those in a directory
-that is hidden or in `exclude`, and those the `blacklist` rejects. So a
+`include` directories that are [left out](#what-is-left-out): those in a
+directory that is hidden or in `exclude`, those the `blacklist` rejects, and
+what git ignores. So a
 directory you exclude after it was indexed leaves the index, and with it a
 file there that you indexed by name. What you indexed by hand outside the
 `include` directories is left alone. No file on disk is touched.
@@ -395,6 +414,65 @@ that are included now (also the ones made since it started), prunes, and
 scans as when it starts. A configuration that cannot be used is reported in
 the log and the daemon carries on with the one it had. The flags it was
 started with still hold.
+
+### What is left out
+
+A walk through a directory, by `index`, a query that indexes in passing,
+`grep` or the daemon, passes by:
+
+- hidden directories;
+- the `exclude` directories of your configuration, and the files its
+  `blacklist` rejects;
+- what the `.config.yaml` of a directory excludes or blacklists, for the
+  tree below it;
+- what git ignores: the `.gitignore` files of a repository, at every depth,
+  and its `.git/info/exclude`. That is what is built, downloaded or
+  generated: `build/`, `.venv/`, a toolchain under `tools/`.
+
+All of these go by the part of a path below where the walk starts, so a
+file or a directory that you name is indexed or searched whatever it is in:
+`chainsaw index build/generated` works though `build/` is ignored.
+
+To keep what git ignores, say `gitignore: false`, in the profile for
+everything or in the `.config.yaml` of a project for the tree below it;
+`--no-ignore` on `index` and `grep` does it for one run. The ignore file of
+your git configuration (`core.excludesFile`) is not read. A file that is
+tracked although a pattern names it counts as ignored. A repository that is
+your home directory itself is passed over.
+
+```yaml
+# ~/projects/kick_reverse/.config.yaml
+gitignore: false            # build/ holds sources worth indexing
+exclude: [tools, .venv]     # so say here what is not
+```
+
+`chainsaw index` does not take out of the index what came to be left out
+after it was indexed: it only forgets files that are gone from disk. The
+daemon does, when it starts and on SIGHUP (below). Without a daemon, or
+right now:
+
+```bash
+chainsaw forget -n --ignored   # what would go, counted by directory
+chainsaw forget --ignored      # forget what a walk from here leaves out now
+chainsaw forget tools build    # forget everything under these, whatever it is
+```
+
+`forget` touches nothing on disk, and `chainsaw index` brings back what it
+is asked for.
+
+### When the index is busy
+
+One process writes to the index at a time. A command that has to write
+while another does, a query that indexes in passing while the daemon scans,
+waits for it: ten seconds, and then for as long as it has patience, asking
+again a little longer apart each time. That is five minutes for `index`,
+`forget` and the scan of the daemon, and five seconds for a query. It says
+once that it waits.
+
+A query that could not bring the index up to date answers from the index as
+it was, and says so twice: in a note on standard error, and in a line
+`warning: ...` after the results. With `--oneline`, standard output holds
+rows only and the note is on standard error alone.
 
 The index is `~/.chainsaw/graph.db`. It holds names, locations, edges and,
 when embeddings are on, vectors. It holds no source text: the code a query
@@ -484,9 +562,10 @@ Every definition is an entity; every call and import in the source is an
 edge.
 
 **Entity types:** `FUNCTION`, `METHOD` (named `Type.method`), `CLASS`,
-`STRUCT`, `INTERFACE`, `TYPE`, `PACKAGE` (a file's package or module, and
-what it imports), and `EXTERNAL` for something that is called but not defined
-in the index, such as `fmt.Println`.
+`STRUCT`, `INTERFACE`, `TYPE`, `CONSTANT` and `VARIABLE` (in BCPL: the
+entries of `MANIFEST`, and of `GLOBAL` and `STATIC`), `PACKAGE` (a file's
+package or module, and what it imports), and `EXTERNAL` for something that
+is called but not defined in the index, such as `fmt.Println`.
 
 **Relation types:**
 
@@ -546,6 +625,37 @@ index` on its directory (for example `chainsaw index .venv`). A change of
 A graph built from syntax cannot see calls made through reflection, or
 strings that name a function. `chainsaw grep` can.
 
+### BCPL
+
+Two dialects are read, and a file says by itself which it is in. With `{`
+and `}` it is that of the compiler of today: reserved words in upper case,
+`Foo` and `foo` two names. With `$(` and `$)` and no braces it is that of
+the 1980s, of TRIPOS and AmigaDOS:
+
+- No cases are told apart. `let`, `Let` and `LET` are one word, and
+  `CGERROR(...)` calls `LET cgerror(...)`. `outline --body` and `--expand`
+  take a name in any case. In the graph the names of such a file are in
+  lower case, whatever the source has, so ask for them that way:
+  `WHERE t.name = "cgerror"`, or `WHERE t.name =~ "(?i)^cgerror$"` when you
+  do not want to think about it. The signature keeps the spelling of the
+  source.
+- Names may hold dots and end in one: `err.p`, `clear.cmp`, `cgcondjump.`.
+- `$(tag ... $)tag` closes every section still open inside it.
+- `$$TAG := TRUE` sets a conditional compilation tag and is no code;
+  `$<TAG ... $>TAG` is compiled when the tag is set and `$<TAG' ... $>TAG'`
+  when it is not. Both are parsed, since nothing in a file says which tags
+  are set. Where that cannot be, because the two are alternatives for one
+  place (`n := $<TRIPOS 5 $>TRIPOS $<RSX 6 $>RSX`), the conditional texts
+  are left out one at a time until the file parses, and what was left out
+  defines and calls nothing. `grep` still finds it there.
+- `/*/ ... //*/` is one comment: comments do not nest in that dialect.
+
+A routine is as a rule declared in a header (`GLOBAL $( cgapply:120 $)`, a
+`VARIABLE`) and defined in a source (`LET cgapply(op, k) BE`, a `FUNCTION`).
+A call goes to the definition that is code, and to the declaration only
+when the index holds no definition, as for the routines of a library.
+`GET "LIBHDR"` is an import of `libhdr.h` or `libhdr`, whatever the case.
+
 ## Configuration
 
 `~/.chainsaw/config.yaml` is optional. Chainsaw uses these settings of the
@@ -588,7 +698,9 @@ profiles:
 An `exclude` entry is the name of a directory (`vendor`), a glob for one
 (`*.cache`), several names in a row (`tools/ghidra`) or an absolute path; a
 slash at the end is allowed. A project's `.config.yaml`
-can add to `exclude` and `blacklist` and set `index` and `follow`. Of the settings of
+can add to `exclude` and `blacklist`, for the tree below it, and set
+`gitignore`, `index` and `follow`. `gitignore: false` in the profile keeps
+what git ignores everywhere; see [What is left out](#what-is-left-out). Of the settings of
 older versions, `embedding_model` still names the model when `embeddings:`
 does not (and, as before, switches nothing on); `chunk_size`, `overlap`,
 `graph_driver` and `llm_*` are ignored.
@@ -598,6 +710,20 @@ A configuration file that is there but cannot be read is an error for
 defaults would switch off what it switches on.
 
 ## Troubleshooting
+
+**A file "is not in a language chainsaw can parse".** Its name does not say
+what it is and its content did not show it. Name the language:
+`chainsaw outline --lang bcpl <file>`.
+
+**A query takes minutes, or indexes a directory it should not.** It walks
+something large that is not source: see [What is left out](#what-is-left-out).
+Put the directory in `.gitignore` or in `exclude`, then `chainsaw forget
+--ignored` there.
+
+**`database is locked`, or a `warning:` that results may be stale.** Another
+chainsaw kept writing to the index for longer than the command waits: see
+[When the index is busy](#when-the-index-is-busy). Ask again when it is done;
+`journalctl --user -u chainsawd -f` shows what the daemon is doing.
 
 **`query` returns nothing.** Results are limited to the current directory;
 try `--all`. If a note says there were too many files to index in passing,

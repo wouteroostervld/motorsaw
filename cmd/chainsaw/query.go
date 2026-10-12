@@ -28,8 +28,8 @@ Patterns:
   -[:type|type]->  <-[:type]-   An edge, in either direction; -[r:type]- names it
   -[:calls*1..3]->  -[*]->      A path of several edges (up to 5 when no limit is given)
 
-Entity types:   FUNCTION METHOD CLASS STRUCT INTERFACE TYPE PACKAGE,
-                EXTERNAL for what is called but not in the index
+Entity types:   FUNCTION METHOD CLASS STRUCT INTERFACE TYPE CONSTANT VARIABLE
+                PACKAGE, EXTERNAL for what is called but not in the index
 Relation types: calls, may_call (matched by name only, or dispatched through
                 an interface), implements, imports, defines
 

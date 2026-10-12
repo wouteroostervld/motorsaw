@@ -23,6 +23,10 @@ profiles:
       - "build"
       - "dist"
 
+    # What git ignores (.gitignore, .git/info/exclude) is left out as well.
+    # Say false to keep it; a project can say so for itself in .config.yaml.
+    # gitignore: true
+
     # Files never indexed (regular expressions on the absolute path) ...
     blacklist:
       - ".*\\.min\\.js$"

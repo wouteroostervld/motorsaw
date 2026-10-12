@@ -17,7 +17,10 @@ read-only, plus a fourth that only works where it is switched on:
 
 Run them from inside the project. Parsed languages: Go, Python, JavaScript,
 TypeScript, Rust, Java, C, C++, Ruby, BCPL, Motorola 68000 assembly (a global
-label and the lines under it are one definition).
+label and the lines under it are one definition). A file is told by its
+extension; BCPL also by its content, in a file without an extension or a
+`.h`. When `outline` says a file is not in a language it can parse and you
+know what it is, pass `--lang` (`--lang bcpl`); `grep` takes it too.
 
 If `chainsaw` is not on the PATH, say so and work with plain grep; do not
 install it yourself. It is built from
@@ -44,6 +47,11 @@ Patterns are PCRE: lookaround, backreferences and `\b` work. The search is
 exhaustive and always current, so **use `grep -s` to enumerate every place
 before a change that must be complete** (renaming, removing a feature). The
 line ranges tell you what to read.
+
+Exhaustive means the source of the project: hidden directories, excluded
+ones and what git ignores (build output, a virtualenv) are passed by, as
+they are by the index. To search one of those, name it
+(`chainsaw grep X build`) or pass `--no-ignore`.
 
 When there may be much, pass `--limit N` rather than piping into `head`: the
 last line still gives the total, so you know what you have not seen.
@@ -90,8 +98,10 @@ chainsaw query 'MATCH (n:FUNCTION|METHOD) WHERE n.name =~ "^handle" RETURN n.sig
 ```
 
 - **Nodes** `(v:LABEL {name: "x"})`. Labels: `FUNCTION METHOD CLASS STRUCT
-  INTERFACE TYPE PACKAGE EXTERNAL`. Methods are named `Type.method`.
-  `EXTERNAL` is something called but not in the index (`fmt.Println`).
+  INTERFACE TYPE CONSTANT VARIABLE PACKAGE EXTERNAL`. Methods are named
+  `Type.method`. `EXTERNAL` is something called but not in the index
+  (`fmt.Println`). Names from BCPL that brackets with `$(` are in lower case
+  in the graph, whatever the source has: `cgerror` for `CGERROR`.
 - **Edges** `-[:calls]->`, `<-[:calls]-`, `-[:calls|may_call]->`,
   `-[:calls*1..3]->`. Types: `calls`, `may_call`, `implements`, `imports`,
   `defines`.
@@ -115,6 +125,11 @@ call through an interface points at the interface's method
 The index needs no care: before a query runs, files under the current
 directory that are new or changed are indexed. Only if a note says there were
 too many files to index in passing, run `chainsaw index .` once.
+
+**A line `warning: ...` after the results means they may be stale or
+incomplete**: the index could not be brought up to date, most often because
+another chainsaw was writing to it. Run the query again before relying on
+what it says, above all on an empty result.
 
 ## --expand: show the code
 
