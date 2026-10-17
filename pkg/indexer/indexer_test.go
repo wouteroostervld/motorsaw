@@ -440,6 +440,21 @@ func TestEmbeddings_EditSendsItsBranch(t *testing.T) {
 	if err := idx.IndexFile(context.Background(), path, false); err != nil {
 		t.Fatal(err)
 	}
+
+	// Folded definitions are named, not placed: their lines are in the index
+	for _, text := range embedder.Texts {
+		if strings.Contains(text, "chunk: lines") {
+			t.Errorf("line numbers sent to the model: %q", text)
+		}
+	}
+	held := map[string][2]int{}
+	for _, c := range mockDB.Embeddings {
+		held[c.Title] = [2]int{c.StartLine, c.EndLine}
+	}
+	if held["A.f"] != [2]int{2, 13} || held["B.h"] != [2]int{30, 41} {
+		t.Errorf("lines in the index = %v, want A.f at 2-13 and B.h at 30-41", held)
+	}
+
 	edit := func(signature, extra string) []string {
 		t.Helper()
 		before := len(embedder.Texts)

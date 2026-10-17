@@ -87,8 +87,12 @@ func (e *Embeddings) Index(ctx context.Context, src *Source) error {
 				context += ": " + c.Title
 			}
 			for _, p := range e.pieces(c) {
-				chunks = append(chunks, db.EmbeddingChunk{StartLine: p.startLine, EndLine: p.endLine, Title: c.Title, Key: textKey(model, c.Title, p.text)})
-				texts = append(texts, embed.DocumentText(model, context+"\n\n"+p.text))
+				// Where a folded definition is says nothing about what it
+				// does, and moves with every edit above it. The index has
+				// the lines of each chunk.
+				text := foldedLines.ReplaceAllString(p.text, "... chunk")
+				chunks = append(chunks, db.EmbeddingChunk{StartLine: p.startLine, EndLine: p.endLine, Title: c.Title, Key: textKey(model, c.Title, text)})
+				texts = append(texts, embed.DocumentText(model, context+"\n\n"+text))
 			}
 		}
 	}
@@ -141,11 +145,8 @@ var foldedLines = regexp.MustCompile(`\.\.\. chunk: lines \d+-\d+`)
 // that heads what is sent to the model is left out, so the same code in
 // another worktree or virtual environment reuses the vector too, made with
 // the path of the copy that was embedded first. The definition stays in: it
-// says what a fragment is part of. So do folded definitions, but not the
-// lines they are at: an edit higher up the file moves them, and should not
-// send every chunk below it again.
+// says what a fragment is part of.
 func textKey(model, title, text string) string {
-	text = foldedLines.ReplaceAllString(text, "... chunk")
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(model+"\x00"+title+"\x00"+text)))
 }
 
