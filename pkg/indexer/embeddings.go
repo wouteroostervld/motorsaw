@@ -2,9 +2,11 @@ package indexer
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/wouteroostervld/motorsaw/pkg/chunker"
@@ -18,6 +20,7 @@ import (
 type EmbeddingStore interface {
 	InsertEmbeddings(fileID int64, model string, chunks []db.EmbeddingChunk) error
 	DeleteEmbeddings(fileID int64) error
+	CachedEmbeddings(keys []string) (map[string][]float32, error)
 }
 
 // Embedder turns texts into vectors
@@ -62,8 +65,10 @@ func (e *Embeddings) Forget(fileID int64) error {
 	return e.store.DeleteEmbeddings(fileID)
 }
 
-// Index embeds the chunks of a file. What was stored for it stays until the
-// model has answered for all of them.
+// Index embeds the chunks of a file. A chunk whose text has a vector already,
+// in this file or another, takes that one; only the rest are sent to the
+// model. What was stored for the file stays until the model has answered for
+// all of them.
 func (e *Embeddings) Index(ctx context.Context, src *Source) error {
 	if err := e.Ready(); err != nil {
 		return err
@@ -82,23 +87,44 @@ func (e *Embeddings) Index(ctx context.Context, src *Source) error {
 				context += ": " + c.Title
 			}
 			for _, p := range e.pieces(c) {
-				chunks = append(chunks, db.EmbeddingChunk{StartLine: p.startLine, EndLine: p.endLine, Title: c.Title})
+				chunks = append(chunks, db.EmbeddingChunk{StartLine: p.startLine, EndLine: p.endLine, Title: c.Title, Key: textKey(model, c.Title, p.text)})
 				texts = append(texts, embed.DocumentText(model, context+"\n\n"+p.text))
 			}
 		}
 	}
 
-	for i := 0; i < len(texts); i += e.BatchSize {
-		end := min(i+e.BatchSize, len(texts))
-		vectors, err := e.embedder.Embed(ctx, texts[i:end])
+	keys := make([]string, len(chunks))
+	for i, c := range chunks {
+		keys[i] = c.Key
+	}
+	cached, err := e.store.CachedEmbeddings(keys)
+	if err != nil {
+		return err
+	}
+	var missing []int // The chunks the model is asked for, by index
+	for i := range chunks {
+		if v, ok := cached[chunks[i].Key]; ok {
+			chunks[i].Vector = v
+		} else {
+			missing = append(missing, i)
+		}
+	}
+
+	for i := 0; i < len(missing); i += e.BatchSize {
+		batch := missing[i:min(i+e.BatchSize, len(missing))]
+		batchTexts := make([]string, len(batch))
+		for j, k := range batch {
+			batchTexts[j] = texts[k]
+		}
+		vectors, err := e.embedder.Embed(ctx, batchTexts)
 		if err != nil {
 			return err
 		}
-		if len(vectors) != end-i {
-			return fmt.Errorf("got %d embeddings for %d chunks", len(vectors), end-i)
+		if len(vectors) != len(batch) {
+			return fmt.Errorf("got %d embeddings for %d chunks", len(vectors), len(batch))
 		}
 		for j, v := range vectors {
-			chunks[i+j].Vector = v
+			chunks[batch[j]].Vector = v
 		}
 	}
 
@@ -106,6 +132,21 @@ func (e *Embeddings) Index(ctx context.Context, src *Source) error {
 		return err
 	}
 	return e.store.InsertEmbeddings(src.FileID, e.embedder.Model(), chunks)
+}
+
+// foldedLines is the line range the chunker writes after a folded definition
+var foldedLines = regexp.MustCompile(`\.\.\. chunk: lines \d+-\d+`)
+
+// textKey identifies the text of a chunk for reuse of its vector. The path
+// that heads what is sent to the model is left out, so the same code in
+// another worktree or virtual environment reuses the vector too, made with
+// the path of the copy that was embedded first. The definition stays in: it
+// says what a fragment is part of. So do folded definitions, but not the
+// lines they are at: an edit higher up the file moves them, and should not
+// send every chunk below it again.
+func textKey(model, title, text string) string {
+	text = foldedLines.ReplaceAllString(text, "... chunk")
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(model+"\x00"+title+"\x00"+text)))
 }
 
 type piece struct {

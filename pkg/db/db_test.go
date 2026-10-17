@@ -176,3 +176,39 @@ func TestWritesWaitForEachOther(t *testing.T) {
 		t.Errorf("MarkFilePending after the first write failed: %v", err)
 	}
 }
+
+func TestOpen_UpgradesFrom320(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+
+	db, err := Open(Config{Path: dbPath})
+	if err != nil {
+		t.Fatalf("Failed to open database: %v", err)
+	}
+	fileID, _ := addFile(t, db, "/src/a.go")
+	if err := db.SetFileModule(fileID, "graph", 42); err != nil {
+		t.Fatalf("SetFileModule failed: %v", err)
+	}
+	if _, err := db.conn.Exec("DROP TABLE embedding_keys"); err != nil {
+		t.Fatalf("Failed to drop embedding_keys: %v", err)
+	}
+	if err := db.SetMeta(MetaKeySchemaVersion, "3.2.0"); err != nil {
+		t.Fatalf("Failed to set meta: %v", err)
+	}
+	db.Close()
+
+	// Only a table is added: what every kind of index holds stays
+	db, err = Open(Config{Path: dbPath})
+	if err != nil {
+		t.Fatalf("Open refused a 3.2.0 database: %v", err)
+	}
+	defer db.Close()
+	if version, _ := db.GetMeta(MetaKeySchemaVersion); version != SchemaVersion {
+		t.Errorf("schema version = %s, want %s", version, SchemaVersion)
+	}
+	if modules, _ := db.FileModules(fileID); modules["graph"] != 42 {
+		t.Errorf("modules after the upgrade = %v, want graph at 42", modules)
+	}
+	if _, err := db.conn.Exec("SELECT COUNT(*) FROM embedding_keys"); err != nil {
+		t.Errorf("no embedding_keys after the upgrade: %v", err)
+	}
+}

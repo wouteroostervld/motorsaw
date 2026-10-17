@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -177,11 +179,16 @@ func TestModules_SwitchedPerFile(t *testing.T) {
 	if embedder.Calls != calls || mockDB.DeleteChunksCount != deleted {
 		t.Error("an unchanged file was indexed again")
 	}
+	inserts := mockDB.EmbeddingInserts
 	if err := idx.IndexFile(ctx, path, true); err != nil {
 		t.Fatal(err)
 	}
-	if embedder.Calls == calls || mockDB.DeleteChunksCount == deleted {
+	if mockDB.EmbeddingInserts == inserts || mockDB.DeleteChunksCount == deleted {
 		t.Error("forcing did not index an unchanged file again")
+	}
+	// The text is what it was, so the model is not asked again
+	if embedder.Calls != calls {
+		t.Errorf("forcing asked the model %d times for text it had embedded", embedder.Calls-calls)
 	}
 
 	// Switching a kind off forgets what it held, and only that
@@ -338,6 +345,133 @@ func TestEmbeddings_Chunks(t *testing.T) {
 		}
 		if len(text) > 300+len(prefix)+40 {
 			t.Errorf("text %d is %d bytes", i, len(text))
+		}
+	}
+}
+
+func TestEmbeddings_ReusesVectors(t *testing.T) {
+	function := func(name, line string) string {
+		var body strings.Builder
+		for i := 0; i < 12; i++ {
+			body.WriteString("    " + line + "\n")
+		}
+		return "def " + name + "(total):\n" + body.String() + "    return total\n\n\n"
+	}
+	write := func(path, content string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "one", "calc.py")
+	write(path, function("add", "total = total + 1")+function("sub", "total = total - 1"))
+
+	mockDB := NewMockDatabase()
+	embedder := &MockEmbedder{}
+	module := NewEmbeddings(mockDB, embedder)
+	module.MaxChunkSize = 300
+	idx := New(mockDB, nil, module)
+	ctx := context.Background()
+	if err := idx.IndexFile(ctx, path, false); err != nil {
+		t.Fatal(err)
+	}
+	all := len(embedder.Texts)
+	if all < 3 || len(mockDB.Embeddings) != all {
+		t.Fatalf("%d texts embedded for %d chunks, want the skeleton and both functions", all, len(mockDB.Embeddings))
+	}
+
+	// An edit in one function sends that function, not the rest of the file
+	write(path, function("add", "total = total + 1")+function("sub", "total = total - 2"))
+	if err := idx.IndexFile(ctx, path, true); err != nil {
+		t.Fatal(err)
+	}
+	sent := embedder.Texts[all:]
+	if len(sent) == 0 || len(sent) >= all {
+		t.Errorf("an edit in sub sent %d of %d chunks", len(sent), all)
+	}
+	for _, text := range sent {
+		if !strings.Contains(text, "total - 2") {
+			t.Errorf("sent a chunk that did not change: %q", text[:min(len(text), 60)])
+		}
+	}
+	if len(mockDB.Embeddings) != all {
+		t.Errorf("%d chunks stored after the edit, want %d", len(mockDB.Embeddings), all)
+	}
+	for i, c := range mockDB.Embeddings {
+		if len(c.Vector) == 0 {
+			t.Errorf("chunk %d has no vector", i)
+		}
+	}
+
+	// The same file in another place, a worktree or a virtual environment,
+	// is not sent at all
+	before := len(embedder.Texts)
+	copied := filepath.Join(dir, "two", "calc.py")
+	write(copied, function("add", "total = total + 1")+function("sub", "total = total - 2"))
+	if err := idx.IndexFile(ctx, copied, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(embedder.Texts) != before || len(mockDB.Embeddings) != all {
+		t.Errorf("a copy sent %d texts and stored %d chunks, want 0 and %d", len(embedder.Texts)-before, len(mockDB.Embeddings), all)
+	}
+}
+
+func TestEmbeddings_EditSendsItsBranch(t *testing.T) {
+	body := strings.Repeat("        x = x + 1\n", 10)
+	source := func(signature, extra string) string {
+		return "class A:\n    " + signature + ":\n" + extra + body + "        return x\n\n" +
+			"    def g(self, x):\n" + body + "        return x\n\n\n" +
+			"class B:\n    def h(self, x):\n" + body + "        return x\n"
+	}
+	path := filepath.Join(t.TempDir(), "a.py")
+	if err := os.WriteFile(path, []byte(source("def f(self, x)", "")), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mockDB := NewMockDatabase()
+	embedder := &MockEmbedder{}
+	module := NewEmbeddings(mockDB, embedder)
+	module.MaxChunkSize = 300
+	idx := New(mockDB, nil, module)
+	if err := idx.IndexFile(context.Background(), path, false); err != nil {
+		t.Fatal(err)
+	}
+	edit := func(signature, extra string) []string {
+		t.Helper()
+		before := len(embedder.Texts)
+		if err := os.WriteFile(path, []byte(source(signature, extra)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := idx.IndexFile(context.Background(), path, true); err != nil {
+			t.Fatal(err)
+		}
+		var sent []string
+		for _, text := range embedder.Texts[before:] {
+			head, _, _ := strings.Cut(text, "\n")
+			_, title, _ := strings.Cut(head, ": ")
+			sent = append(sent, title)
+		}
+		sort.Strings(sent)
+		return sent
+	}
+
+	// A line more in the body of A.f moves everything below it, but only
+	// A.f reads differently: A and the file show it folded to its signature
+	if sent := edit("def f(self, x)", "        x = x * 2\n"); !reflect.DeepEqual(sent, []string{"A.f"}) {
+		t.Errorf("an edit in a body sent again %q, want A.f", sent)
+	}
+	// A new signature shows in A as well, which folds it
+	if sent := edit("def f(self, x, y)", "        x = x * 2\n"); !reflect.DeepEqual(sent, []string{"A", "A.f"}) {
+		t.Errorf("a new signature sent again %q, want A and A.f", sent)
+	}
+	// What was reused is stored where it is now
+	for _, c := range mockDB.Embeddings {
+		if c.Title == "B.h" && c.StartLine != 31 {
+			t.Errorf("B.h stored at line %d, want 31", c.StartLine)
 		}
 	}
 }

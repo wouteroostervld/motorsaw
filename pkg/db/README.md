@@ -32,6 +32,7 @@ can be deleted at any time and is built again from the source.
 | `symbol_dirty` | Names whose definitions changed; references to them are linked again |
 | `project_follows` | The directories a project follows its imports into |
 | `embedding_chunks` | A vector per chunk (sqlite-vec); only there when embeddings are on |
+| `embedding_keys` | A hash of the text each vector was made from, so the same text is not embedded twice |
 
 ## How references become edges
 
