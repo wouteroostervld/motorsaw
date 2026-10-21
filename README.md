@@ -126,7 +126,7 @@ library there. See [The graph](MANUAL.md#the-graph) in the manual.
 ## Languages
 
 Go, Python, JavaScript, TypeScript/TSX, Rust, Java, C, C++, Ruby, BCPL,
-Motorola 68000 assembly and IBM Enterprise COBOL are parsed for definitions, calls and imports. Go
+Motorola 68000 and x86 assembly (Intel and AT&T syntax) and IBM Enterprise COBOL are parsed for definitions, calls and imports. Go
 calls are resolved exactly with the Go type checker, including calls through
 interfaces. Markdown, HTML and XML fold into an outline but define no symbols.
 
@@ -134,8 +134,19 @@ In 68000 assembly (`.s`, `.asm`, `.i`, in the syntax of the Amiga assemblers)
 a definition is a global label and the lines up to the next one: a `FUNCTION`
 when code follows the label, a `STRUCT` when data does. Macros are functions
 too. `jsr` and `bsr` are calls, and so is a jump or branch to another global
-label; `jsr _LVOAllocMem(a6)` is a call of `_LVOAllocMem`. Assembly for
-another processor in a file with one of these extensions is left alone.
+label; `jsr _LVOAllocMem(a6)` is a call of `_LVOAllocMem`.
+
+x86 assembly is read the same way, in either syntax: Intel as NASM writes it
+and Ghidra prints it (`nasm`), and AT&T as `gcc -S`, `clang -S` and `objdump`
+write it (`gas`). A `call` is a call, and so is a jump to another global label;
+`call puts@PLT` is a call of `puts`. Calls through a register or a table are
+not followed. `.L` labels, numeric labels and `.local` labels belong to the
+global label above them, and `.include` and `%include` are imports. The
+extensions `.s`, `.asm`, `.i` and `.inc` are used for assembly of every
+processor, so a file is read as the language it has the fewest errors in (the
+`--language` of `match` is `m68k`, `nasm` or `gas`); `.nasm` is NASM. In NASM
+a `global name:function` swallows the lines after it, which is a fault of the
+grammar; plain `global name` is fine.
 
 In BCPL (`.b`, `.bcpl`) a definition is a function or a routine, whether it is
 introduced by `LET` or by `AND`, and a `GET` is an import. Reserved words are

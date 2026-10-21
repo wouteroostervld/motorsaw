@@ -22,7 +22,9 @@ import (
 
 	tree_sitter_bcpl "github.com/wouteroostervld/motorsaw/pkg/chunker/bcpl"
 	tree_sitter_cobol "github.com/wouteroostervld/motorsaw/pkg/chunker/cobol"
+	tree_sitter_gas "github.com/wouteroostervld/motorsaw/pkg/chunker/gas"
 	tree_sitter_m68k "github.com/wouteroostervld/motorsaw/pkg/chunker/m68k"
+	tree_sitter_nasm "github.com/wouteroostervld/motorsaw/pkg/chunker/nasm"
 )
 
 type set map[string]bool
@@ -77,6 +79,9 @@ type langSpec struct {
 	remark     func(b *builder, n *sitter.Node) bool // The node is a comment, though its kind says otherwise
 	labelKinds set                                   // Kinds of label nodes, whether they start a definition or not
 	dataKinds  set                                   // Kinds that make what a label names data and not code
+	// data and passive are for grammars where a kind does not say enough
+	data    func(b *builder, n *sitter.Node) bool // The node, a label or what follows one, makes what it names data
+	passive func(b *builder, n *sitter.Node) bool // The node is neither code nor data, and the label above it names what follows
 	// target names the label an instruction calls or jumps to; "" when it does neither
 	target func(b *builder, n *sitter.Node, sc scope) string
 	// shared says the extensions are used by other languages too, so that a
@@ -93,7 +98,7 @@ func (s *langSpec) language() *sitter.Language {
 }
 
 // sourceExtensions are file extensions that may appear in import paths
-var sourceExtensions = setOf(".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".h", ".hh", ".hpp", ".hxx", ".py", ".rb", ".s", ".asm", ".i", ".b")
+var sourceExtensions = setOf(".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".h", ".hh", ".hpp", ".hxx", ".py", ".rb", ".s", ".asm", ".i", ".inc", ".nasm", ".b")
 
 var importSeparators = regexp.MustCompile(`::|[/.\\]`)
 
@@ -636,6 +641,226 @@ var m68kSpec = &langSpec{
 	shared:     true,
 }
 
+// x86Branches are the instructions that transfer control to their operand,
+// in Intel mnemonics and in the AT&T forms with a suffix
+var x86Branches = setOf(
+	"call", "callq", "calll", "callw", "jmp", "jmpq", "jmpl", "jmpw",
+	"ja", "jae", "jb", "jbe", "jc", "je", "jg", "jge", "jl", "jle",
+	"jna", "jnae", "jnb", "jnbe", "jnc", "jne", "jng", "jnge", "jnl", "jnle",
+	"jno", "jnp", "jns", "jnz", "jo", "jp", "jpe", "jpo", "js", "jz",
+	"jcxz", "jecxz", "jrcxz", "loop", "loope", "loopne", "loopz", "loopnz",
+)
+
+// x86Target applies the rule of m68kTarget to x86: a call is a call, and so is
+// a jump that leaves the definition it is in. name is the operand when it is a
+// plain symbol.
+func x86Target(b *builder, mnemonic, name string, sc scope) string {
+	mnemonic = strings.ToLower(mnemonic)
+	if !x86Branches[mnemonic] || !isIdentifier(name) {
+		return ""
+	}
+	if !strings.HasPrefix(mnemonic, "call") && sc.sym >= 0 && b.file.Symbols[sc.sym].Name == name {
+		return "" // A loop
+	}
+	return name
+}
+
+// nasmLine returns the label and the instruction of a source line, either of
+// which may be nil
+func nasmLine(n *sitter.Node) (label, instruction *sitter.Node) {
+	if n.Kind() != "source_line" {
+		return nil, nil
+	}
+	return findChild(n, "label"), findChild(n, "instruction")
+}
+
+// findChild returns the first child of a kind, or nil
+func findChild(n *sitter.Node, kind string) *sitter.Node {
+	for i := uint(0); i < n.NamedChildCount(); i++ {
+		if c := n.NamedChild(i); c.Kind() == kind {
+			return c
+		}
+	}
+	return nil
+}
+
+// nasmLabel returns the name of the label a source line starts with, or ""
+func nasmLabel(b *builder, n *sitter.Node) string {
+	label, _ := nasmLine(n)
+	if label == nil {
+		return ""
+	}
+	return b.text(label.ChildByFieldName("name"))
+}
+
+// nasmLocal reports whether a label is local to the global label above it
+func nasmLocal(name string) bool {
+	return strings.HasPrefix(name, ".")
+}
+
+func nasmTarget(b *builder, n *sitter.Node, sc scope) string {
+	if n.Kind() != "actual_instruction" {
+		return ""
+	}
+	operands := n.ChildByFieldName("operands")
+	if operands == nil || operands.NamedChildCount() == 0 {
+		return ""
+	}
+	// jmp short next, call near helper: the symbol is what the operand ends with
+	operand := operands.NamedChild(operands.NamedChildCount() - 1)
+	var symbol *sitter.Node
+	for i := uint(0); i < operand.NamedChildCount(); i++ {
+		if c := operand.NamedChild(i); c.Kind() == "word" {
+			symbol = c
+		} else if c.Kind() != "operand_prefix" {
+			return "" // [rel puts], rax, a number
+		}
+	}
+	if symbol == nil {
+		return ""
+	}
+	name := b.text(symbol)
+	if nasmLocal(name) {
+		return ""
+	}
+	return x86Target(b, b.text(n.ChildByFieldName("instruction")), name, sc)
+}
+
+// x86 assembly in the Intel syntax of NASM, which Ghidra and most
+// disassemblers print as well. Global labels are the definitions; local
+// labels, .loop, belong to the one above them.
+var nasmSpec = &langSpec{
+	name:    "nasm",
+	grammar: tree_sitter_nasm.Language,
+	comment: ";",
+	defs:    map[string]defKind{"preproc_multiline_macro": function},
+	leading: setOf("comment"),
+	// The label of a line is what defines, whatever else is on the line
+	describe: func(b *builder, n *sitter.Node, d *def) bool {
+		if n.Kind() == "source_line" {
+			d.name = nasmLabel(b, n)
+		}
+		return true
+	},
+	label: func(b *builder, n *sitter.Node) bool {
+		name := nasmLabel(b, n)
+		return name != "" && !nasmLocal(name)
+	},
+	// A line with nothing but a label on it
+	passive: func(b *builder, n *sitter.Node) bool {
+		label, instruction := nasmLine(n)
+		return label != nil && instruction == nil
+	},
+	data: func(b *builder, n *sitter.Node) bool {
+		_, instruction := nasmLine(n)
+		if instruction == nil || instruction.NamedChildCount() == 0 {
+			return false
+		}
+		switch instruction.NamedChild(0).Kind() {
+		case "pseudo_instruction_dx", "pseudo_instruction_resx", "pseudo_instruction_equ_command", "pseudo_instruction_incbin_command":
+			return true
+		}
+		return false
+	},
+	target:      nasmTarget,
+	importKinds: setOf("preproc_include"),
+	imports: func(b *builder, n *sitter.Node) {
+		b.addImport("", b.text(n.ChildByFieldName("path")), "")
+	},
+	shared: true,
+}
+
+// gasLocal reports whether a label is local to its file: the .L labels the
+// compilers make, and the numeric labels, 1: and jmp 1b
+func gasLocal(name string) bool {
+	if strings.HasPrefix(name, ".L") {
+		return true
+	}
+	return name != "" && strings.Trim(name, "0123456789") == ""
+}
+
+func gasLabel(b *builder, n *sitter.Node) string {
+	if n.Kind() != "label" {
+		return ""
+	}
+	return b.text(n.ChildByFieldName("name"))
+}
+
+// gasDirective returns the name of a directive, or ""
+func gasDirective(b *builder, n *sitter.Node) string {
+	if n.Kind() != "directive" {
+		return ""
+	}
+	return strings.ToLower(b.text(n.ChildByFieldName("name")))
+}
+
+// gasDataDirectives put data where they are
+var gasDataDirectives = setOf(
+	".byte", ".word", ".short", ".value", ".2byte", ".long", ".int", ".4byte", ".quad", ".8byte", ".octa",
+	".ascii", ".asciz", ".string", ".string8", ".string16", ".float", ".single", ".double",
+	".zero", ".space", ".skip", ".fill", ".incbin", ".uleb128", ".sleb128",
+)
+
+// gasPassiveDirectives tell the assembler about a symbol or a place, and put
+// neither code nor data anywhere
+var gasPassiveDirectives = setOf(
+	".align", ".balign", ".p2align", ".type", ".size", ".globl", ".global", ".weak", ".hidden",
+	".protected", ".internal", ".local", ".file", ".loc", ".ident", ".comm", ".lcomm", ".set", ".equ",
+)
+
+func gasTarget(b *builder, n *sitter.Node, sc scope) string {
+	if n.Kind() != "instruction" {
+		return ""
+	}
+	operands := n.ChildByFieldName("operands")
+	if operands == nil || operands.NamedChildCount() == 0 {
+		return ""
+	}
+	// Only a plain symbol: *%rax and *table(,%rax,8) are calls through a register or a table
+	target := operands.NamedChild(operands.NamedChildCount() - 1)
+	if target.Kind() != "symbol" {
+		return ""
+	}
+	name := b.text(target.ChildByFieldName("name"))
+	if gasLocal(name) || target.ChildByFieldName("name").Kind() == "local_reference" {
+		return ""
+	}
+	return x86Target(b, b.text(n.ChildByFieldName("mnemonic")), name, sc)
+}
+
+// x86 assembly in the AT&T syntax of the GNU assembler: what gcc -S, clang -S
+// and objdump write. Global labels are the definitions; the .L labels of the
+// compilers and numeric labels belong to the one above them.
+var gasSpec = &langSpec{
+	name:    "gas",
+	grammar: tree_sitter_gas.Language,
+	comment: "#",
+	leading: setOf("comment"),
+	label: func(b *builder, n *sitter.Node) bool {
+		name := gasLabel(b, n)
+		return name != "" && !gasLocal(name)
+	},
+	labelKinds: setOf("label"),
+	data: func(b *builder, n *sitter.Node) bool {
+		return gasDataDirectives[gasDirective(b, n)]
+	},
+	passive: func(b *builder, n *sitter.Node) bool {
+		name := gasDirective(b, n)
+		return gasPassiveDirectives[name] || strings.HasPrefix(name, ".cfi_")
+	},
+	target:      gasTarget,
+	importKinds: setOf("directive"),
+	imports: func(b *builder, n *sitter.Node) {
+		if gasDirective(b, n) != ".include" {
+			return
+		}
+		if args := n.ChildByFieldName("arguments"); args != nil && args.NamedChildCount() > 0 {
+			b.addImport("", b.text(args.NamedChild(0)), "")
+		}
+	},
+	shared: true,
+}
+
 // cobolName is how a name is kept: COBOL does not tell cases apart
 func cobolName(s string) string { return strings.ToUpper(strings.Trim(s, "'\"")) }
 
@@ -836,6 +1061,8 @@ var extensions = map[string]*langSpec{
 	".s":        m68kSpec,
 	".asm":      m68kSpec,
 	".i":        m68kSpec,
+	".nasm":     nasmSpec,
+	".inc":      nasmSpec,
 	".cbl":      cobolSpec,
 	".cob":      cobolSpec,
 	".cobol":    cobolSpec,
@@ -855,8 +1082,33 @@ func init() {
 	extensions[".tsx"] = tsx
 }
 
+// candidates are the languages of the extensions that more than one language
+// uses: assembly for every processor is kept in .s and .asm files. A file is
+// read as the one it fits best, see parseFile.
+var candidates = map[string][]*langSpec{
+	".s":    {m68kSpec, gasSpec, nasmSpec},
+	".asm":  {m68kSpec, nasmSpec, gasSpec},
+	".i":    {m68kSpec, gasSpec, nasmSpec},
+	".inc":  {nasmSpec, m68kSpec, gasSpec},
+	".nasm": {nasmSpec, gasSpec},
+}
+
+// specFor returns the language of a file by its extension; of those that share
+// one, the first
 func specFor(path string) *langSpec {
 	return extensions[strings.ToLower(filepath.Ext(path))]
+}
+
+// specsFor returns the languages a file may be in
+func specsFor(path string) []*langSpec {
+	ext := strings.ToLower(filepath.Ext(path))
+	if shared, ok := candidates[ext]; ok {
+		return shared
+	}
+	if spec := extensions[ext]; spec != nil {
+		return []*langSpec{spec}
+	}
+	return nil
 }
 
 // findKind returns the first node of the given kind at or below n

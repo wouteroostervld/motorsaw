@@ -733,21 +733,173 @@ func TestParse_M68k(t *testing.T) {
 	}
 }
 
-func TestParse_OtherAssembly(t *testing.T) {
-	src := `	.file	"clib.c"
+const gasSource = `	.file	"clib.c"
+	.include "defs.inc"
 	.text
 	.globl	main
 	.type	main, @function
 main:
+.LFB0:
+	.cfi_startproc
 	pushq	%rbp
 	movq	%rsp, %rbp
 	movl	$0, %eax
 	call	puts@PLT
+	call	helper
+	call	*%rdx
+	jne	.L2
+	jmp	other
+.L2:
+	movl	-4(%rbp,%rax,4), %eax
 	popq	%rbp
 	ret
+	.cfi_endproc
+	.size	main, .-main
+
+helper:
+	jmp	helper
+	ret
+
+	.section	.rodata
+table:
+	.align 8
+	.quad	helper
+	.long	.L2-table
 `
-	if _, ok := Parse("clib.s", []byte(src), 0); ok {
-		t.Error("Parse took x86 assembly for m68k")
+
+func TestParse_Gas(t *testing.T) {
+	// Assembly for another processor in the same extension is left to its own grammar
+	f := parse(t, "clib.s", gasSource)
+	if f.Language != "gas" {
+		t.Fatalf("language is %s, want gas", f.Language)
+	}
+
+	want := []struct {
+		name, etype string
+	}{
+		{"main", TypeFunction},
+		{"helper", TypeFunction},
+		{"table", TypeStruct},
+	}
+	if len(f.Symbols) != len(want) {
+		t.Fatalf("got %d symbols, want %d: %+v", len(f.Symbols), len(want), f.Symbols)
+	}
+	for i, w := range want {
+		if s := f.Symbols[i]; s.Name != w.name || s.Type != w.etype {
+			t.Errorf("symbol %d is %s %s, want %s %s", i, s.Type, s.Name, w.etype, w.name)
+		}
+	}
+
+	main, _ := findSymbol(t, f, "main")
+	helper, _ := findSymbol(t, f, "helper")
+	for _, ref := range []Ref{
+		{Source: -1, Relation: RelationImports, Name: "defs", ImportBase: "defs", External: "defs.inc"},
+		{Source: main, Relation: RelationCalls, Name: "puts", External: "puts"},
+		{Source: main, Relation: RelationCalls, Name: "helper", External: "helper"},
+		{Source: main, Relation: RelationCalls, Name: "other", External: "other"},
+	} {
+		if !hasRef(f, ref) {
+			t.Errorf("missing ref %+v in %+v", ref, f.Refs)
+		}
+	}
+	// Neither a call through a register, a branch to a local label nor a loop is a call
+	for _, r := range f.Refs {
+		if r.Name == ".L2" || r.Name == "%rdx" || (r.Source == helper && r.Name == "helper") {
+			t.Errorf("unexpected ref %+v", r)
+		}
+	}
+}
+
+const nasmSource = `%include "defs.inc"
+section .data
+msg:	db "hello", 10, 0
+len	equ $ - msg
+buf:	resb 64
+
+section .text
+global _start
+; Entry point
+_start:
+	mov rdi, 1
+	lea rsi, [rel msg]
+	call helper
+	jne .skip
+	jmp short other
+.skip:
+	call [rel puts]
+	mov eax, dword [rbp-4]
+	syscall
+
+helper:
+	jmp helper
+	ret
+
+other: mov eax, 1
+	ret
+`
+
+func TestParse_Nasm(t *testing.T) {
+	f := parse(t, "boot.asm", nasmSource)
+	if f.Language != "nasm" {
+		t.Fatalf("language is %s, want nasm", f.Language)
+	}
+
+	want := []struct {
+		name, etype string
+		start, end  int
+	}{
+		{"msg", TypeStruct, 3, 3},
+		{"len", TypeStruct, 4, 4},
+		{"buf", TypeStruct, 5, 8}, // The directives up to the comment of the next label
+		{"_start", TypeFunction, 9, 19},
+		{"helper", TypeFunction, 21, 23},
+		{"other", TypeFunction, 25, 26},
+	}
+	if len(f.Symbols) != len(want) {
+		t.Fatalf("got %d symbols, want %d: %+v", len(f.Symbols), len(want), f.Symbols)
+	}
+	for i, w := range want {
+		s := f.Symbols[i]
+		if s.Name != w.name || s.Type != w.etype || s.StartLine != w.start || s.EndLine != w.end {
+			t.Errorf("symbol %d is %s %s lines %d-%d, want %s %s lines %d-%d",
+				i, s.Type, s.Name, s.StartLine, s.EndLine, w.etype, w.name, w.start, w.end)
+		}
+	}
+
+	start, _ := findSymbol(t, f, "_start")
+	for _, ref := range []Ref{
+		{Source: -1, Relation: RelationImports, Name: "defs", ImportBase: "defs", External: "defs.inc"},
+		{Source: start, Relation: RelationCalls, Name: "helper", External: "helper"},
+		{Source: start, Relation: RelationCalls, Name: "other", External: "other"},
+	} {
+		if !hasRef(f, ref) {
+			t.Errorf("missing ref %+v in %+v", ref, f.Refs)
+		}
+	}
+	helper, _ := findSymbol(t, f, "helper")
+	for _, r := range f.Refs {
+		if r.Name == ".skip" || r.Name == "puts" || (r.Source == helper && r.Name == "helper") {
+			t.Errorf("unexpected ref %+v", r)
+		}
+	}
+}
+
+func TestParse_AssemblyByContent(t *testing.T) {
+	// One extension, three languages: each file is read as the one it fits
+	for _, c := range []struct{ path, src, lang string }{
+		{"a.s", gasSource, "gas"},
+		{"a.asm", nasmSource, "nasm"},
+		{"a.asm", m68kSource, "m68k"},
+		{"a.s", m68kSource, "m68k"},
+		{"a.S", gasSource, "gas"},
+		{"a.nasm", nasmSource, "nasm"},
+	} {
+		f, ok := Parse(c.path, []byte(c.src), 0)
+		if !ok {
+			t.Errorf("%s: not parsed, want %s", c.path, c.lang)
+		} else if f.Language != c.lang {
+			t.Errorf("%s is read as %s, want %s", c.path, f.Language, c.lang)
+		}
 	}
 }
 

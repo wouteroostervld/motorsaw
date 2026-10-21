@@ -143,11 +143,13 @@ func Parse(path string, src []byte, maxChunkSize int) (*File, bool) {
 		return b.file, true
 	}
 
-	tree := spec.parse(src)
+	spec, tree := parseFile(path, src)
 	if tree == nil {
 		return nil, false
 	}
 	defer tree.Close()
+	b.spec = spec
+	b.file.Language = spec.name
 
 	root := tree.RootNode()
 	b.collectImports(root)
@@ -161,6 +163,32 @@ func Parse(path string, src []byte, maxChunkSize int) (*File, bool) {
 	}
 
 	return b.file, true
+}
+
+// parseFile returns the language of a file and its syntax tree, which the
+// caller closes; nil when the file is in none of the languages its extension
+// stands for. Where the extension is shared, as .asm is by the assemblers of
+// every processor, the file is read as the language it has the fewest errors
+// in; the first of them wins a tie.
+func parseFile(path string, src []byte) (*langSpec, *sitter.Tree) {
+	var best *langSpec
+	var bestTree *sitter.Tree
+	bestShare := 2.0
+	for _, spec := range specsFor(path) {
+		tree := spec.parse(src)
+		if tree == nil {
+			continue
+		}
+		if share := errorShare(tree.RootNode()); share < bestShare {
+			if bestTree != nil {
+				bestTree.Close()
+			}
+			best, bestTree, bestShare = spec, tree, share
+		} else {
+			tree.Close()
+		}
+	}
+	return best, bestTree
 }
 
 // parse returns the syntax tree of a file, which the caller closes; nil when
@@ -180,6 +208,21 @@ func (s *langSpec) parse(src []byte) *sitter.Tree {
 		return nil
 	}
 	return tree
+}
+
+// errorShare is the part of the top-level nodes of a tree that have errors in them
+func errorShare(root *sitter.Node) float64 {
+	total := root.NamedChildCount()
+	if total == 0 {
+		return 0
+	}
+	errors := uint(0)
+	for i := uint(0); i < total; i++ {
+		if c := root.NamedChild(i); c.IsError() || c.HasError() {
+			errors++
+		}
+	}
+	return float64(errors) / float64(total)
 }
 
 // parsesWell reports whether a file is in the language its extension stands
@@ -334,18 +377,34 @@ func (b *builder) walkLabels(n *sitter.Node, sc scope) {
 			}
 
 			dk := function
-			for _, next := range children[i+1 : end] {
-				if kind := next.Kind(); !b.leads(next) && !b.spec.labelKinds[kind] {
-					if b.spec.dataKinds[kind] {
-						dk = defKind{etype: TypeStruct}
+			if b.isData(c) {
+				dk = defKind{etype: TypeStruct}
+			} else {
+				for _, next := range children[i+1 : end] {
+					if !b.leads(next) && !b.isPassive(next) {
+						if b.isData(next) {
+							dk = defKind{etype: TypeStruct}
+						}
+						break
 					}
-					break
 				}
 			}
 			inner = b.define(c, children[end-1], dk, sc)
 		}
 		b.walk(c, inner)
 	}
+}
+
+// isPassive reports whether a node in assembly neither is code nor data: a
+// label that is not a definition, or a directive that only describes
+func (b *builder) isPassive(n *sitter.Node) bool {
+	return b.spec.labelKinds[n.Kind()] || (b.spec.passive != nil && b.spec.passive(b, n))
+}
+
+// isData reports whether a node in assembly makes what the label above it
+// names data and not code
+func (b *builder) isData(n *sitter.Node) bool {
+	return b.spec.dataKinds[n.Kind()] || (b.spec.data != nil && b.spec.data(b, n))
 }
 
 // define handles a definition node and returns the scope for its children.

@@ -40,10 +40,18 @@ func QueryLanguages() []string {
 func grammars() []*langSpec {
 	seen := make(map[*langSpec]bool)
 	var specs []*langSpec
-	for _, spec := range extensions {
+	add := func(spec *langSpec) {
 		if spec.grammar != nil && !seen[spec] {
 			seen[spec] = true
 			specs = append(specs, spec)
+		}
+	}
+	for _, spec := range extensions {
+		add(spec)
+	}
+	for _, shared := range candidates {
+		for _, spec := range shared {
+			add(spec)
 		}
 	}
 	sort.Slice(specs, func(i, j int) bool { return specs[i].name < specs[j].name })
@@ -191,7 +199,12 @@ func (q *Query) Languages() []string {
 
 // Fits reports whether the query can match in a file, going by its language
 func (q *Query) Fits(path string) bool {
-	return q.compiled[specFor(path)] != nil
+	for _, spec := range specsFor(path) {
+		if q.compiled[spec] != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // Find returns the nodes the query captures in a file, in file order. A
@@ -199,16 +212,18 @@ func (q *Query) Fits(path string) bool {
 // as the subject of a predicate, and is left out. Find may be called from
 // several goroutines at once.
 func (q *Query) Find(path string, src []byte) []Capture {
-	spec := specFor(path)
-	compiled := q.compiled[spec]
-	if compiled == nil {
+	if !q.Fits(path) {
 		return nil
 	}
-	tree := spec.parse(src)
+	spec, tree := parseFile(path, src)
 	if tree == nil {
 		return nil
 	}
 	defer tree.Close()
+	compiled := q.compiled[spec]
+	if compiled == nil {
+		return nil
+	}
 
 	cursor := sitter.NewQueryCursor()
 	defer cursor.Close()
@@ -242,11 +257,10 @@ const maxLeafText = 40
 // (1-indexed, inclusive) are shown; 0 leaves that side open. It returns false
 // when the language is not parsed with tree-sitter.
 func SyntaxTree(path string, src []byte, from, to int) (string, bool) {
-	spec := specFor(path)
-	if spec == nil || spec.grammar == nil {
+	if spec := specFor(path); spec == nil || spec.grammar == nil {
 		return "", false
 	}
-	tree := spec.parse(src)
+	_, tree := parseFile(path, src)
 	if tree == nil {
 		return "", false
 	}
