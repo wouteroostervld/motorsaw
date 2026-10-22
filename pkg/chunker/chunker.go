@@ -653,7 +653,7 @@ func (b *builder) call(n *sitter.Node, field string, sc scope) {
 		ref.Name = b.text(nameNode)
 		if recv := firstField(callee, receiverFields); recv != nil {
 			ref.Member = true
-			if recv.NamedChildCount() == 0 {
+			if recv.NamedChildCount() == 0 || recv.Kind() == "variable_name" { // $this
 				receiver = b.text(recv)
 			}
 		}

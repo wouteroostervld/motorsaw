@@ -125,7 +125,7 @@ library there. See [The graph](MANUAL.md#the-graph) in the manual.
 
 ## Languages
 
-Go, Python, JavaScript, TypeScript/TSX, Rust, Java, C, C++, Ruby, BCPL,
+Go, Python, JavaScript, TypeScript/TSX, Rust, Java, C, C++, Ruby, PHP, BCPL,
 Motorola 68000 and x86 assembly (Intel and AT&T syntax) and IBM Enterprise COBOL are parsed for definitions, calls and imports. Go
 calls are resolved exactly with the Go type checker, including calls through
 interfaces. Markdown, HTML and XML fold into an outline but define no symbols.

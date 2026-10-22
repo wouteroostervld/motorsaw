@@ -15,6 +15,7 @@ import (
 	tree_sitter_html "github.com/tree-sitter/tree-sitter-html/bindings/go"
 	tree_sitter_java "github.com/tree-sitter/tree-sitter-java/bindings/go"
 	tree_sitter_javascript "github.com/tree-sitter/tree-sitter-javascript/bindings/go"
+	tree_sitter_php "github.com/tree-sitter/tree-sitter-php/bindings/go"
 	tree_sitter_python "github.com/tree-sitter/tree-sitter-python/bindings/go"
 	tree_sitter_ruby "github.com/tree-sitter/tree-sitter-ruby/bindings/go"
 	tree_sitter_rust "github.com/tree-sitter/tree-sitter-rust/bindings/go"
@@ -98,7 +99,7 @@ func (s *langSpec) language() *sitter.Language {
 }
 
 // sourceExtensions are file extensions that may appear in import paths
-var sourceExtensions = setOf(".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".h", ".hh", ".hpp", ".hxx", ".py", ".rb", ".s", ".asm", ".i", ".inc", ".nasm", ".b")
+var sourceExtensions = setOf(".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".h", ".hh", ".hpp", ".hxx", ".py", ".rb", ".php", ".s", ".asm", ".i", ".inc", ".nasm", ".b")
 
 var importSeparators = regexp.MustCompile(`::|[/.\\]`)
 
@@ -441,6 +442,78 @@ var javaSpec = &langSpec{
 		}
 		// The imported class is the module: Foo.bar() resolves into Foo.java
 		b.addImport(b.text(path.ChildByFieldName("name")), b.text(path), "")
+	},
+}
+
+// phpUse reads one `use` declaration. The clause of a grouped one,
+// use Foo\{A, B as C}, is a name without a path of its own.
+func phpUse(b *builder, n *sitter.Node) {
+	var prefix string
+	if n.NamedChildCount() > 0 && n.NamedChild(0).Kind() == "namespace_name" {
+		prefix = b.text(n.NamedChild(0)) + `\`
+	}
+	var clauses []*sitter.Node
+	for i := uint(0); i < n.NamedChildCount(); i++ {
+		switch c := n.NamedChild(i); c.Kind() {
+		case "namespace_use_clause":
+			clauses = append(clauses, c)
+		case "namespace_use_group":
+			for j := uint(0); j < c.NamedChildCount(); j++ {
+				clauses = append(clauses, c.NamedChild(j))
+			}
+		}
+	}
+	for _, c := range clauses {
+		if c.NamedChildCount() == 0 {
+			continue
+		}
+		path := strings.TrimPrefix(prefix+b.text(c.NamedChild(0)), `\`)
+		local := b.text(c.ChildByFieldName("alias"))
+		if local == "" {
+			local = path[strings.LastIndex(path, `\`)+1:]
+		}
+		// The imported class is the module: Foo::bar() resolves into Foo.php
+		b.addImport(local, path, "")
+	}
+}
+
+// phpInclude reads require and include with a literal path
+func phpInclude(b *builder, n *sitter.Node) {
+	if n.NamedChildCount() == 1 && n.NamedChild(0).Kind() == "string" {
+		b.addImport("", b.text(n.NamedChild(0)), "")
+	}
+}
+
+var phpSpec = &langSpec{
+	name:    "php",
+	grammar: tree_sitter_php.LanguagePHP,
+	comment: "//",
+	defs: map[string]defKind{
+		"function_definition":   function,
+		"method_declaration":    function,
+		"class_declaration":     class,
+		"trait_declaration":     class,
+		"interface_declaration": iface,
+		"enum_declaration":      enum,
+	},
+	leading: setOf("comment"),
+	calls: map[string]string{
+		"function_call_expression":        "function",
+		"member_call_expression":          "",
+		"nullsafe_member_call_expression": "",
+		"scoped_call_expression":          "",
+	},
+	selfNames: setOf("$this", "self", "static"),
+	importKinds: setOf(
+		"namespace_use_declaration", "require_expression", "require_once_expression",
+		"include_expression", "include_once_expression",
+	),
+	imports: func(b *builder, n *sitter.Node) {
+		if n.Kind() == "namespace_use_declaration" {
+			phpUse(b, n)
+		} else {
+			phpInclude(b, n)
+		}
 	},
 }
 
@@ -1056,6 +1129,7 @@ var extensions = map[string]*langSpec{
 	".hpp":      cppSpec,
 	".hxx":      cppSpec,
 	".rb":       rubySpec,
+	".php":      phpSpec,
 	".b":        bcplSpec,
 	".bcpl":     bcplSpec,
 	".s":        m68kSpec,

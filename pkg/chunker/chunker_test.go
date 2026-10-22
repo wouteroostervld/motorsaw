@@ -314,6 +314,28 @@ public class A {
 			ref:     Ref{Source: 1, Relation: RelationCalls, Name: "init", Container: "A", External: "init"},
 		},
 		{
+			path: "a.php",
+			src: `<?php
+namespace App;
+
+use Foo\Helper;
+
+class A {
+    public function run($n) {
+        Helper::help($n);
+        return $this->init();
+    }
+
+    private function init() {
+        return 0;
+    }
+}
+`,
+			symbols: map[string]string{"A": TypeClass, "A.run": TypeMethod, "A.init": TypeMethod},
+			stub:    "class A // ... chunk: lines 6-15",
+			ref:     Ref{Source: 1, Relation: RelationCalls, Name: "init", Container: "A", External: "init", Member: true},
+		},
+		{
 			path: "a.cpp",
 			src: `#include "widget.h"
 
