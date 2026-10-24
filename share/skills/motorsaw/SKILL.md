@@ -5,8 +5,8 @@ description: Structural code search for a local codebase with the motorsaw CLI. 
 
 # Motorsaw
 
-`motorsaw` looks at code through its syntax tree. Four commands, all
-read-only, plus a fourth that only works where it is switched on:
+`motorsaw` looks at code through its syntax tree. Four read-only commands,
+plus a fifth that only works where it is switched on:
 
 | Command | Answers | Needs the index |
 |---|---|---|
@@ -17,9 +17,14 @@ read-only, plus a fourth that only works where it is switched on:
 | `motorsaw search <words>` | Where is the code that does this, when I have no name for it? | Yes, and off by default |
 
 Run them from inside the project. Parsed languages: Go, Python, JavaScript,
-TypeScript, Rust, Java, C, C++, Ruby, BCPL, Motorola 68000 assembly (a global
-label and the lines under it are one definition), IBM Enterprise COBOL (a
-paragraph or section is a definition; names are upper case).
+TypeScript/TSX, Rust, Java, C, C++, Ruby, PHP, BCPL, Motorola 68000 assembly,
+x86 assembly (Intel/NASM and AT&T/gas syntax) and IBM Enterprise COBOL. In
+assembly a global label and the lines under it are one definition, and a
+`call` or a jump to another global label is a call; in COBOL a paragraph or
+section is a definition, and names are upper case. The `.s`, `.asm`, `.i` and
+`.inc` files of every processor share extensions, so each is read as the
+language it has the fewest errors in (`match --lang` takes `m68k`, `nasm` or
+`gas`).
 
 If `motorsaw` is not on the PATH, say so and work with plain grep; do not
 install it yourself. It is built from
