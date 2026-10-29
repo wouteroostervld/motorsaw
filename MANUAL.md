@@ -492,7 +492,9 @@ or a limit, a small file, a file motorsaw cannot parse, and a second whole
 read of the same file in a session are left alone: an agent that does need
 all of it gets it.
 
-It is off until it is switched on, so installing it changes nothing:
+It is off until it is switched on, so installing it changes nothing. To
+switch it on for one project, put this in the project's
+`.claude/settings.local.json` (or in `~/.claude/settings.json` for all):
 
 ```json
 "hooks": {"PreToolUse": [{"matcher": "Read",
@@ -506,7 +508,31 @@ It is off until it is switched on, so installing it changes nothing:
 | `MOTORSAW_READ_HOOK_LINES` | Files with fewer lines are left alone (default 300). |
 | `MOTORSAW_READ_HOOK_MAX` | The longest outline handed over, in bytes (default 16000). |
 
+What the agent sees, when a read is refused: the outline, the command that
+printed it, and commands to read on, which name the file's largest
+definition, so that they can be run as they are:
+
+```
+To read on:
+- some lines: Read with offset and limit; the outline gives the lines of each definition
+- one definition: `motorsaw outline --body Dbal_DatabaseInterface.GetDatabasesFull src_Dbal_DatabaseInterface.go` (lines 540-681)
+- where a name is used, by definition: `motorsaw grep -s 'GetDatabasesFull' .`
+- all of it: Read the whole file again; a second whole read goes through
+```
+
+The agent skill (`share/skills/motorsaw`) tells agents what such a refusal
+is and how to read on.
+
+**Switching it off.** Set `MOTORSAW_READ_HOOK` to `off` in the same `env`, or
+remove the hook; `/hooks` in Claude Code shows it and can turn it off, and
+`"disableAllHooks": true` turns off every hook. The variable is read from the
+session's environment, so it holds for the whole session, subagents included.
+For one project only, put the hook in that project's
+`.claude/settings.local.json`, as above, rather than in `~/.claude/settings.json`.
+
 The switch makes a comparison easy: the same task with the hook on and off.
+Since it holds per session, run each arm in a session of its own, or change
+the setting between batches of agents.
 Every token a session reads early is read again, from the cache, on each
 later call, so `deny` is the setting that saves: on a 105 KB generated file
 the agent gets a 12.5 KB outline instead.
