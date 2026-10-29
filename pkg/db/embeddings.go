@@ -2,7 +2,9 @@ package db
 
 import (
 	"database/sql"
+	"encoding/binary"
 	"fmt"
+	"math"
 	"strconv"
 
 	sqlite_vec "github.com/asg017/sqlite-vec-go-bindings/cgo"
@@ -33,6 +35,7 @@ type EmbeddingChunk struct {
 	StartLine int    // 1-indexed
 	EndLine   int    // 1-indexed, inclusive
 	Title     string // The definition or section it is, or is part of; empty for the file itself
+	Key       string // A hash of the text the vector was made from; empty when there is none to reuse it by
 	Vector    []float32
 }
 
@@ -107,6 +110,13 @@ func (db *DB) InsertEmbeddings(fileID int64, model string, chunks []EmbeddingChu
 		return fmt.Errorf("failed to prepare embedding insert: %w", err)
 	}
 	defer stmt.Close()
+	// A key left behind by a version that did not remove keys may name the
+	// chunk_id that is given out again; this one replaces it
+	keyStmt, err := tx.Prepare("INSERT OR REPLACE INTO embedding_keys (chunk_id, text_key) VALUES (?, ?)")
+	if err != nil {
+		return fmt.Errorf("failed to prepare embedding key insert: %w", err)
+	}
+	defer keyStmt.Close()
 
 	for _, c := range chunks {
 		if len(c.Vector) != dim {
@@ -116,8 +126,19 @@ func (db *DB) InsertEmbeddings(fileID int64, model string, chunks []EmbeddingChu
 		if err != nil {
 			return fmt.Errorf("failed to serialize embedding: %w", err)
 		}
-		if _, err := stmt.Exec(fileID, c.StartLine, c.EndLine, c.Title, vector); err != nil {
+		result, err := stmt.Exec(fileID, c.StartLine, c.EndLine, c.Title, vector)
+		if err != nil {
 			return fmt.Errorf("failed to insert embedding: %w", err)
+		}
+		if c.Key == "" {
+			continue
+		}
+		chunkID, err := result.LastInsertId()
+		if err != nil {
+			return fmt.Errorf("failed to insert embedding: %w", err)
+		}
+		if _, err := keyStmt.Exec(chunkID, c.Key); err != nil {
+			return fmt.Errorf("failed to insert embedding key: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -131,10 +152,79 @@ func (db *DB) DeleteEmbeddings(fileID int64) error {
 	if model, _, err := db.EmbeddingModel(); err != nil || model == "" {
 		return err
 	}
-	if _, err := db.conn.Exec("DELETE FROM embedding_chunks WHERE file_id = ?", fileID); err != nil {
+
+	// A transaction writes; see pool
+	db.conn.writing.Lock()
+	defer db.conn.writing.Unlock()
+
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec("DELETE FROM embedding_keys WHERE chunk_id IN (SELECT chunk_id FROM embedding_chunks WHERE file_id = ?)", fileID); err != nil {
+		return fmt.Errorf("failed to delete embedding keys: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM embedding_chunks WHERE file_id = ?", fileID); err != nil {
 		return fmt.Errorf("failed to delete embeddings: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit embeddings delete: %w", err)
+	}
 	return nil
+}
+
+// CachedEmbeddings returns the vectors already made for texts with the given
+// keys, by key. A key nothing was made for is not in the map.
+func (db *DB) CachedEmbeddings(keys []string) (map[string][]float32, error) {
+	if model, _, err := db.EmbeddingModel(); err != nil || model == "" {
+		return nil, err
+	}
+
+	stmt, err := db.conn.Prepare(`
+		SELECT e.embedding
+		FROM embedding_keys k JOIN embedding_chunks e ON e.chunk_id = k.chunk_id
+		WHERE k.text_key = ?
+		LIMIT 1`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to prepare embedding lookup: %w", err)
+	}
+	defer stmt.Close()
+
+	vectors := make(map[string][]float32)
+	for _, key := range keys {
+		if _, done := vectors[key]; done {
+			continue
+		}
+		var blob []byte
+		err := stmt.QueryRow(key).Scan(&blob)
+		if err == sql.ErrNoRows {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to look up embedding: %w", err)
+		}
+		vector, err := deserializeFloat32(blob)
+		if err != nil {
+			return nil, err
+		}
+		vectors[key] = vector
+	}
+	return vectors, nil
+}
+
+// deserializeFloat32 reads a vector as sqlite-vec stores it: little-endian
+// 32-bit floats
+func deserializeFloat32(blob []byte) ([]float32, error) {
+	if len(blob)%4 != 0 {
+		return nil, fmt.Errorf("stored embedding is %d bytes, not a whole number of floats", len(blob))
+	}
+	vector := make([]float32, len(blob)/4)
+	for i := range vector {
+		vector[i] = math.Float32frombits(binary.LittleEndian.Uint32(blob[i*4:]))
+	}
+	return vector, nil
 }
 
 // ResetEmbeddings removes every embedding, and with it the choice of model.
@@ -152,6 +242,9 @@ func (db *DB) ResetEmbeddings(module string) error {
 
 	if _, err := tx.Exec("DROP TABLE IF EXISTS embedding_chunks"); err != nil {
 		return fmt.Errorf("failed to drop embeddings table: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM embedding_keys"); err != nil {
+		return fmt.Errorf("failed to reset embeddings: %w", err)
 	}
 	if _, err := tx.Exec("DELETE FROM file_modules WHERE module = ?", module); err != nil {
 		return fmt.Errorf("failed to reset embeddings: %w", err)

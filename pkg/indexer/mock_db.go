@@ -21,8 +21,9 @@ type MockDatabase struct {
 	SymbolDefs []db.SymbolDef
 	SymbolRefs []db.SymbolRef
 
-	EmbeddingModel string
-	Embeddings     []db.EmbeddingChunk
+	EmbeddingModel   string
+	Embeddings       []db.EmbeddingChunk
+	EmbeddingInserts int
 }
 
 // MockChunk is a chunk the indexer stored
@@ -90,12 +91,25 @@ func (m *MockDatabase) StoreFileSymbols(fileID int64, root string, defs []db.Sym
 func (m *MockDatabase) InsertEmbeddings(fileID int64, model string, chunks []db.EmbeddingChunk) error {
 	m.EmbeddingModel = model
 	m.Embeddings = append(m.Embeddings, chunks...)
+	m.EmbeddingInserts++
 	return nil
 }
 
 func (m *MockDatabase) DeleteEmbeddings(fileID int64) error {
 	m.Embeddings = nil
 	return nil
+}
+
+func (m *MockDatabase) CachedEmbeddings(keys []string) (map[string][]float32, error) {
+	vectors := make(map[string][]float32)
+	for _, key := range keys {
+		for _, c := range m.Embeddings {
+			if c.Key != "" && c.Key == key {
+				vectors[key] = c.Vector
+			}
+		}
+	}
+	return vectors, nil
 }
 
 // MockEmbedder gives every text a vector without asking a model, and records

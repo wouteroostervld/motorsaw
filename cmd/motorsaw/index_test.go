@@ -341,6 +341,13 @@ func TestSyncIndex_EmbeddingsPerProject(t *testing.T) {
 
 	// A run for the graph alone does not ask the model, even after an edit
 	path := filepath.Join(dir, "sub", "b.py")
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(content, "\n# edited\n"...), 0600); err != nil {
+		t.Fatal(err)
+	}
 	later := time.Now().Add(time.Second)
 	if err := os.Chtimes(path, later, later); err != nil {
 		t.Fatal(err)

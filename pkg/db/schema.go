@@ -3,7 +3,7 @@ package db
 // SchemaVersion identifies the layout of the database. A database written by
 // another version is not migrated, unless initSchema says how: the index is
 // cheap to rebuild.
-const SchemaVersion = "3.2.0"
+const SchemaVersion = "3.3.0"
 
 // schema holds the DDL statements, in dependency order
 var schema = []string{
@@ -128,6 +128,17 @@ var schema = []string{
     dir TEXT NOT NULL,
     PRIMARY KEY (root, dir)
 );`,
+
+	// What text each embedded chunk was made from, as a hash. A chunk with
+	// the same text, in another copy of a file or after an edit elsewhere in
+	// it, takes the vector that is there instead of asking the model again.
+	// The vectors are in embedding_chunks, which is made when the first are
+	// stored.
+	`CREATE TABLE IF NOT EXISTS embedding_keys (
+    chunk_id INTEGER PRIMARY KEY,
+    text_key TEXT NOT NULL
+);`,
+	`CREATE INDEX IF NOT EXISTS idx_embedding_keys_key ON embedding_keys(text_key);`,
 }
 
 // MetaKeys are standard keys stored in the meta table
