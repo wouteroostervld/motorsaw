@@ -30,6 +30,12 @@ blacklist:
   - ".*\\.log$"         # Log files
   - ".*debug.*\\.go$"   # Debug-specific code files
 
+# For Both: What git ignores (.gitignore, .git/info/exclude) is left out of
+# the index and of searches. Say false to keep it for the files below this
+# directory, when build output is worth indexing here; exclude above then
+# names what is not.
+# gitignore: false
+
 # For Both: Switch kinds of index on or off for the files below this
 # directory. A kind that is not named keeps the setting of your profile.
 index:

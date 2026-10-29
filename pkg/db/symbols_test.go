@@ -398,3 +398,25 @@ func TestSelectTargets(t *testing.T) {
 		})
 	}
 }
+
+func TestSelectTargets_CodeBeforeData(t *testing.T) {
+	// BCPL: a routine is declared as a global in a header and defined in a source
+	cands := []candidate{
+		{entityID: 1, entityType: "VARIABLE", path: "/proj/com/cghdr", root: "/proj"},
+		{entityID: 2, entityType: "FUNCTION", path: "/proj/com/mcg5", root: "/proj"},
+	}
+	ref := pendingRef{relationType: "calls", path: "/proj/com/mcg2", root: "/proj"}
+	if ids, weight := selectTargets(ref, cands, nil); !reflect.DeepEqual(ids, []int64{2}) || weight != weightExact {
+		t.Errorf("targets = %v (weight %v), want the routine and not its declaration", ids, weight)
+	}
+	// A routine that is only declared, as those of a library are
+	if ids, _ := selectTargets(ref, cands[:1], nil); !reflect.DeepEqual(ids, []int64{1}) {
+		t.Errorf("targets = %v, want the declaration when there is nothing else", ids)
+	}
+}
+
+func TestMatchesImport_AnyCase(t *testing.T) {
+	if !matchesImport("/proj/g/libhdr.h", "LIBHDR") || !matchesImport("/proj/LCGHDR", "lcghdr") || matchesImport("/proj/g/libhdr.h", "lib") {
+		t.Error("an import should name its file whatever the case, and no other")
+	}
+}

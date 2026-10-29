@@ -1,6 +1,9 @@
 package db
 
 import (
+	"errors"
+	"fmt"
+	"github.com/mattn/go-sqlite3"
 	"os"
 	"path/filepath"
 	"testing"
@@ -174,5 +177,70 @@ func TestWritesWaitForEachOther(t *testing.T) {
 	db.conn.writing.Unlock()
 	if err := <-done; err != nil {
 		t.Errorf("MarkFilePending after the first write failed: %v", err)
+	}
+}
+
+func TestWriters_OfTwoProcesses(t *testing.T) {
+	// Two handles on one file stand for two processes: the daemon and a query
+	path := filepath.Join(t.TempDir(), "graph.db")
+	daemon, err := Open(Config{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer daemon.Close()
+	query, err := Open(Config{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer query.Close()
+
+	// A transaction that reads first and writes later, as resolving
+	// references does. The other process writes meanwhile, and has to wait:
+	// were it let through, what the transaction read would be stale and its
+	// own write would fail with "database is locked", at once and for good.
+	wrote := make(chan error, 1)
+	err = func() error {
+		query.conn.writing.Lock()
+		defer query.conn.writing.Unlock()
+		tx, err := query.conn.Begin()
+		if err != nil {
+			return err
+		}
+		defer tx.Rollback()
+		var n int
+		if err := tx.QueryRow("SELECT count(*) FROM entities").Scan(&n); err != nil {
+			return err
+		}
+
+		go func() { wrote <- daemon.SetMeta("who", "daemon") }()
+		select {
+		case err := <-wrote:
+			wrote <- err
+			return fmt.Errorf("the other process wrote while a transaction that writes was open (%v)", err)
+		case <-time.After(200 * time.Millisecond):
+		}
+
+		if _, err := tx.Exec("INSERT INTO entities (name, entity_type, chunk_id) VALUES ('x', 'EXTERNAL', 0)"); err != nil {
+			return fmt.Errorf("the transaction could not write after reading: %w", err)
+		}
+		return tx.Commit()
+	}()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-wrote; err != nil {
+		t.Errorf("the other process could not write once the transaction was done: %v", err)
+	}
+}
+
+func TestIsBusy(t *testing.T) {
+	if !IsBusy(sqlite3.Error{Code: sqlite3.ErrBusy}) || !IsBusy(fmt.Errorf("failed to insert external entity: %w", sqlite3.Error{Code: sqlite3.ErrBusy})) {
+		t.Error("a busy database is not told")
+	}
+	if !IsBusy(errors.New("graph index: failed to insert entity: database is locked")) {
+		t.Error("a busy database is not told from its message")
+	}
+	if IsBusy(nil) || IsBusy(errors.New("no such table")) || IsBusy(sqlite3.Error{Code: sqlite3.ErrConstraint}) {
+		t.Error("another error is taken for a busy database")
 	}
 }

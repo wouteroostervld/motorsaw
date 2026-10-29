@@ -10,6 +10,7 @@ import (
 	"github.com/wouteroostervld/motorsaw/pkg/config"
 	"github.com/wouteroostervld/motorsaw/pkg/db"
 	"github.com/wouteroostervld/motorsaw/pkg/embed"
+	"github.com/wouteroostervld/motorsaw/pkg/filter"
 	"github.com/wouteroostervld/motorsaw/pkg/indexer"
 )
 
@@ -26,6 +27,7 @@ Looking at code:
 
 Keeping the index:
   index <path>               Index the source files under a path
+  forget <path>              Make the index forget the files under a path; nothing on disk is touched
   status                     Show what is in the index, and which kinds of index are on here
   daemon start               Watch for changes and keep the index current
   migrate                    Move an installation made as chainsaw over to motorsaw
@@ -33,7 +35,7 @@ Keeping the index:
 For Claude Code:
   hook read                  A PreToolUse hook that hands an agent the outline of a large file it reads whole
 
-Run a command with --help for its options.`
+Run a command with --help for its options; "motorsaw version" says which motorsaw this is.`
 
 func main() {
 	if len(os.Args) < 2 {
@@ -42,7 +44,7 @@ func main() {
 	}
 
 	switch os.Args[1] {
-	case "migrate", "version", "help", "-h", "--help", "hook":
+	case "migrate", "version", "-v", "-V", "--version", "help", "-h", "--help", "hook":
 	default:
 		legacyNote()
 	}
@@ -67,6 +69,8 @@ func main() {
 		}
 	case "index":
 		handleIndex(os.Args[2:])
+	case "forget":
+		handleForget(os.Args[2:])
 	case "status":
 		handleStatus()
 	case "daemon":
@@ -75,7 +79,7 @@ func main() {
 		handleMigrate(os.Args[2:])
 	case "hook":
 		handleHook(os.Args[2:])
-	case "version":
+	case "version", "-v", "-V", "--version":
 		fmt.Printf("motorsaw version %s\n", version)
 	case "help", "-h", "--help":
 		fmt.Println(usage)
@@ -148,6 +152,17 @@ func activeProfile() *config.Profile {
 type settings struct {
 	profile *config.Profile
 	kinds   *config.IndexResolver // Which kinds of index are on, by file
+	walk    *filter.Walk          // What a walk through a tree leaves out
+}
+
+// newWalk makes the rules for what a walk leaves out from a profile.
+// Without gitignore, what git ignores is not left out, whatever the profile
+// says.
+func newWalk(profile *config.Profile, gitignore bool) *filter.Walk {
+	if profile.Gitignore != nil && !*profile.Gitignore {
+		gitignore = false
+	}
+	return filter.NewWalk(profile.Exclude, profile.Blacklist, profile.Whitelist, gitignore)
 }
 
 func loadSettings() (*settings, error) {
@@ -159,7 +174,7 @@ func loadSettings() (*settings, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", configPath(), err)
 	}
-	return &settings{profile: profile, kinds: kinds}, nil
+	return &settings{profile: profile, kinds: kinds, walk: newWalk(profile, true)}, nil
 }
 
 // embedder returns the client for the configured embedding model, or nil

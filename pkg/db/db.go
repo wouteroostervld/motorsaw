@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,6 +17,11 @@ import (
 
 // driverName is the SQLite driver with the functions queries rely on
 const driverName = "sqlite3_motorsaw"
+
+// busyTimeout is how long SQLite lets a writer wait for the writer of
+// another process before it fails it. Who can wait longer asks again; see
+// IsBusy.
+const busyTimeout = 10 * time.Second
 
 var registerDriver sync.Once
 
@@ -35,11 +41,45 @@ type DB struct {
 // lets one connection write at a time and fails the others with "database is
 // locked" when they have waited for the busy timeout. Storing the symbols of
 // one file can take longer than that, so the writers of one process wait for
-// each other here, for as long as it takes. Reading does not wait. Writers in
-// other processes are still up to SQLite.
+// each other here, for as long as it takes. Reading does not wait.
+//
+// Writers in other processes are up to SQLite, which makes one wait for the
+// other for the busy timeout, but only when it knows that a transaction is
+// going to write. One that starts by reading and writes later is failed at
+// once, with "database is locked", when another process wrote in between:
+// what it read is no longer what is there. So transactions are begun on a
+// connection of their own that takes the write lock at the start.
 type pool struct {
 	*sql.DB
+	writer  *sql.DB // Begins its transactions with BEGIN IMMEDIATE
 	writing sync.Mutex
+}
+
+// Begin starts a transaction that writes. It waits for a writer in another
+// process, for the busy timeout. The caller holds writing.
+func (p *pool) Begin() (*sql.Tx, error) {
+	return p.writer.Begin()
+}
+
+// Close closes the connections
+func (p *pool) Close() error {
+	err := p.writer.Close()
+	if closeErr := p.DB.Close(); err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+// IsBusy reports whether an error is SQLite giving up on a database that
+// another connection, as a rule another process, is writing to. What was
+// asked can be asked again.
+func IsBusy(err error) bool {
+	var sqliteErr sqlite3.Error
+	if errors.As(err, &sqliteErr) {
+		return sqliteErr.Code == sqlite3.ErrBusy || sqliteErr.Code == sqlite3.ErrLocked
+	}
+	// Wrapped with %v somewhere on the way up
+	return err != nil && strings.Contains(err.Error(), "database is locked")
 }
 
 // Exec runs a statement that writes, when no other write is going on
@@ -87,27 +127,35 @@ func Open(cfg Config) (*DB, error) {
 		})
 	})
 
-	dsn := fmt.Sprintf("file:%s?_foreign_keys=on&_busy_timeout=10000", cfg.Path)
+	dsn := fmt.Sprintf("file:%s?_foreign_keys=on&_busy_timeout=%d", cfg.Path, busyTimeout.Milliseconds())
 	conn, err := sql.Open(driverName, dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
+	writer, err := sql.Open(driverName, dsn+"&_txlock=immediate")
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+	// One transaction writes at a time
+	writer.SetMaxOpenConns(1)
+	writer.SetConnMaxLifetime(time.Hour)
 
 	// Configure connection pool (single writer, multiple readers)
 	conn.SetMaxOpenConns(5)
 	conn.SetMaxIdleConns(2)
 	conn.SetConnMaxLifetime(time.Hour)
 
-	db := &DB{conn: &pool{DB: conn}, path: cfg.Path}
+	db := &DB{conn: &pool{DB: conn, writer: writer}, path: cfg.Path}
 
 	if err := db.initSchema(); err != nil {
-		conn.Close()
+		db.conn.Close()
 		return nil, fmt.Errorf("failed to initialize schema: %w", err)
 	}
 
 	// Set file permissions to 0600 (user read/write only)
 	if err := os.Chmod(cfg.Path, 0600); err != nil {
-		conn.Close()
+		db.conn.Close()
 		return nil, fmt.Errorf("failed to set database permissions: %w", err)
 	}
 
@@ -122,7 +170,9 @@ func (db *DB) initSchema() error {
 		}
 	}
 
-	tx, err := db.conn.Begin()
+	// Not a transaction that takes the write lock: nearly always the schema
+	// is there, and a command that only reads must not wait for a writer
+	tx, err := db.conn.DB.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}

@@ -19,7 +19,6 @@ import (
 	"github.com/wouteroostervld/motorsaw/pkg/chunker"
 	"github.com/wouteroostervld/motorsaw/pkg/config"
 	"github.com/wouteroostervld/motorsaw/pkg/db"
-	"github.com/wouteroostervld/motorsaw/pkg/filter"
 	"github.com/wouteroostervld/motorsaw/pkg/indexer"
 	"github.com/wouteroostervld/motorsaw/pkg/watcher"
 	"github.com/wouteroostervld/motorsaw/pkg/worker"
@@ -286,7 +285,7 @@ func (c *daemonConfig) ignores(path string) (ignored, included bool) {
 		included = true
 		// Included directories may lie inside each other, and a file is
 		// kept when the scan comes to it from any of them
-		if !skipped(root, dir, c.st.profile.Exclude) {
+		if !c.st.walk.SkipDir(root, dir) && !c.st.walk.SkipFile(root, path) {
 			walked = true
 			break
 		}
@@ -294,11 +293,7 @@ func (c *daemonConfig) ignores(path string) (ignored, included bool) {
 	if !included {
 		return false, false
 	}
-	if !walked {
-		return true, true
-	}
-	ok, _ := filter.ShouldIndexFile(path, c.st.profile.Blacklist, c.st.profile.Whitelist)
-	return !ok, true
+	return !walked, true
 }
 
 // daemon is what the running daemon is made of
@@ -344,17 +339,24 @@ func (d *daemon) changed(path string) {
 	cfg := d.current.Load()
 
 	// A project may have switched a kind of index on or off
-	if filepath.Base(path) == ".config.yaml" {
+	switch filepath.Base(path) {
+	case ".config.yaml":
 		cfg.st.kinds.Reset()
+		cfg.st.walk.Reset()
+		return
+	case ".gitignore":
+		// What it leaves out from now on; what it left in the index goes
+		// when the daemon prunes
+		cfg.st.walk.Reset()
 		return
 	}
 
 	// Only what can be parsed has anything to index
-	if !chunker.Supported(path) {
-		return
-	}
 	if ignored, included := cfg.ignores(path); ignored || !included {
 		slog.Debug("Filtered out file", "file", path)
+		return
+	}
+	if !chunker.Recognised(path) {
 		return
 	}
 
@@ -461,7 +463,7 @@ func (d *daemon) watch(ctx context.Context, cfg *daemonConfig) (roots []string) 
 				return nil
 			case !entry.IsDir():
 				return nil
-			case path != root && skipped(root, path, cfg.st.profile.Exclude):
+			case path != root && cfg.st.walk.SkipDir(root, path):
 				passed++
 				return filepath.SkipDir
 			}
@@ -573,7 +575,7 @@ func pruneIgnored(ctx context.Context, database *db.DB, cfg *daemonConfig) (stat
 func startupScan(ctx context.Context, database *db.DB, st *settings, roots []string, kinds []string) {
 	slog.Info("Scan started", "kinds", kinds, "dirs", roots)
 	start := time.Now()
-	stats, err := syncIndex(database, st, roots, syncOptions{ctx: ctx, only: kinds, log: slog.Default()})
+	stats, err := syncIndex(database, st, roots, syncOptions{ctx: ctx, only: kinds, log: slog.Default(), patience: indexPatience})
 	result := []any{
 		"took", time.Since(start).Round(time.Millisecond), "indexed", stats.indexed, "unchanged", stats.unchanged,
 		"removed", stats.removed, "failed", stats.failed,

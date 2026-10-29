@@ -1010,3 +1010,72 @@ func TestParse_Cobol(t *testing.T) {
 		}
 	}
 }
+
+func TestParse_M68kCallsThroughRegisters(t *testing.T) {
+	// As a disassembly of compiled BCPL and of calls into libraries reads:
+	// nearly every call goes through a register
+	f := parse(t, "dos.s", `dos_g23:
+	move.l  d2,d1
+	movea.l 116(a2),a4	; G29 dos_g29
+	moveq   #28,d0
+	jsr     (a5)
+.loc_1:
+	lea     seg5_l12-seg5_entry(a4),a4
+	moveq   #12,d0
+	jsr     (a5)
+	lea     Handler(pc),a0
+	jsr     (a0)
+	jsr     -198(a6)	; exec AllocMem
+	jsr     -30(a6)	; open the thing now
+	rts
+
+dos_g24:
+	movea.l 120(a2),a4	; G30 dos_g30
+	movea.l d1,a4
+	jsr     (a5)
+	lea     Table(pc),a0	; not called: read
+	move.l  (a0)+,d0
+	movea.l 124(a2),a4	; G31
+	jsr     (a5)
+	jsr     (a3)	; cleanup
+	bsr.w   dos_g23
+	jmp     (rom_entry).l
+`)
+	first, _ := findSymbol(t, f, "dos_g23")
+	second, _ := findSymbol(t, f, "dos_g24")
+	if len(f.Symbols) != 2 {
+		t.Fatalf("symbols = %+v, want the two global labels", f.Symbols)
+	}
+
+	want := []Ref{
+		// A comment names the global that was loaded: not checked by anything
+		{Source: first, Relation: RelationMayCall, Name: "dos_g29", External: "dos_g29"},
+		// The operand names the routine
+		{Source: first, Relation: RelationCalls, Name: "seg5_l12", External: "seg5_l12"},
+		{Source: first, Relation: RelationCalls, Name: "Handler", External: "Handler"},
+		// A library vector, named by its comment: the routine of that
+		// library, and failing that anything of the name
+		{Source: first, Relation: RelationMayCall, Name: "exec_AllocMem", External: "exec_AllocMem"},
+		{Source: first, Relation: RelationMayCall, Name: "AllocMem"},
+		// One word may be prose: it counts when something is called that
+		{Source: second, Relation: RelationMayCall, Name: "cleanup"},
+		{Source: second, Relation: RelationCalls, Name: "dos_g23", External: "dos_g23"},
+		{Source: second, Relation: RelationCalls, Name: "rom_entry", External: "rom_entry"},
+	}
+	if len(f.Refs) != len(want) {
+		t.Errorf("got %d refs, want %d: %+v", len(f.Refs), len(want), f.Refs)
+	}
+	for _, ref := range want {
+		if !hasRef(f, ref) {
+			t.Errorf("missing ref %+v in %+v", ref, f.Refs)
+		}
+	}
+	// Not: a sentence, a register that was written to since, a label that
+	// was loaded and not called, the number of a global without its name
+	for _, r := range f.Refs {
+		switch r.Name {
+		case "open", "now", "dos_g30", "Table", "G31", "not":
+			t.Errorf("unexpected ref %+v", r)
+		}
+	}
+}

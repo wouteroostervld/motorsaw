@@ -31,6 +31,22 @@ type Options struct {
 	Word       bool     // The pattern must match whole words
 	Exclude    []string // Directories to skip, besides hidden ones (see filter.Excluded)
 	Signature  bool     // Only matches in the signature of a definition count: in it, before its body
+	// Walk says what is left out under a directory, in place of Exclude:
+	// also what git ignores, and what a project excludes
+	Walk *filter.Walk
+	// Language is the language to read files as: those named among the
+	// paths, and under a directory those whose name does not say what they
+	// are. Empty to go by name and content.
+	Language string
+}
+
+// walk is what a walk leaves out: Walk, or else the hidden and Exclude
+// directories
+func (o Options) walk() *filter.Walk {
+	if o.Walk != nil {
+		return o.Walk
+	}
+	return filter.NewWalk(o.Exclude, nil, nil, false)
 }
 
 // Line is a line that matched
@@ -77,8 +93,11 @@ func Search(pattern string, paths []string, opts Options) ([]File, error) {
 	// Finding the definitions around the matches means parsing each file
 	// that has any, which is the slow part and is done in parallel.
 	var found []*candidate
-	err = walk(paths, opts.Exclude, func(path string) {
+	err = walk(paths, opts.walk(), func(path string, named bool) {
 		if c := matchFile(re, path); c != nil {
+			if opts.Language != "" && (named || !chunker.Supported(path)) {
+				c.language = opts.Language
+			}
 			found = append(found, c)
 		}
 	})
@@ -93,7 +112,7 @@ func Search(pattern string, paths []string, opts Options) ([]File, error) {
 // over the text. Only files in a language the query fits are searched.
 func Match(query *chunker.Query, paths []string, opts Options) ([]File, error) {
 	var fits []string
-	err := walk(paths, opts.Exclude, func(path string) {
+	err := walk(paths, opts.walk(), func(path string, _ bool) {
 		if query.Fits(path) {
 			fits = append(fits, path)
 		}
@@ -119,8 +138,8 @@ func Match(query *chunker.Query, paths []string, opts Options) ([]File, error) {
 }
 
 // walk calls search for the files named, and for the regular files under
-// the directories named. Hidden and excluded directories are skipped.
-func walk(paths, excluded []string, search func(path string)) error {
+// the directories named that w does not leave out; named says which.
+func walk(paths []string, w *filter.Walk, search func(path string, named bool)) error {
 	for _, root := range paths {
 		info, err := os.Stat(root)
 		if err != nil {
@@ -133,24 +152,24 @@ func walk(paths, excluded []string, search func(path string)) error {
 		}
 		if !info.IsDir() {
 			// A file named on the command line is searched whatever it is
-			search(root)
+			search(root, true)
 			continue
 		}
 		err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
 				return nil
 			}
-			name := d.Name()
+			abs := filepath.Join(from, path[len(root):])
 			if d.IsDir() {
 				// A directory named on the command line is searched even
-				// when it is hidden or excluded, or inside one that is
-				if path != root && (strings.HasPrefix(name, ".") || filter.Excluded(from, filepath.Join(from, path[len(root):]), excluded)) {
+				// when it is hidden, excluded or ignored, or inside one that is
+				if path != root && w.SkipDir(from, abs) {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if d.Type().IsRegular() {
-				search(path)
+			if d.Type().IsRegular() && !w.GitIgnored(from, abs) {
+				search(path, false)
 			}
 			return nil
 		})
@@ -193,9 +212,10 @@ func each[T any](items []T, group func(T) File) []File {
 
 // candidate is a file with matches, before its definitions are known
 type candidate struct {
-	path    string
-	content []byte
-	offsets []int // Where the matches start, in order
+	path     string
+	language string // What to read it as; empty to go by name and content
+	content  []byte
+	offsets  []int // Where the matches start, in order
 }
 
 // readText returns the content of a file; nil when it is empty, too large or
@@ -239,7 +259,12 @@ func matchFile(re *pcre.Regexp, path string) *candidate {
 // signature of a definition are kept.
 func (c *candidate) group(signature bool) File {
 	lines := bytes.Split(c.content, []byte{'\n'})
-	parsed, _ := chunker.Parse(c.path, c.content, 0)
+	var parsed *chunker.File
+	if c.language != "" {
+		parsed, _ = chunker.ParseAs(c.language, c.path, c.content, 0)
+	} else {
+		parsed, _ = chunker.Parse(c.path, c.content, 0)
+	}
 
 	var numbers []int
 	line, last := 1, 0

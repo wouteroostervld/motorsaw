@@ -199,7 +199,7 @@ func (q *Query) Languages() []string {
 
 // Fits reports whether the query can match in a file, going by its language
 func (q *Query) Fits(path string) bool {
-	for _, spec := range specsFor(path) {
+	for _, spec := range specsFor(path, nil) {
 		if q.compiled[spec] != nil {
 			return true
 		}
@@ -215,7 +215,7 @@ func (q *Query) Find(path string, src []byte) []Capture {
 	if !q.Fits(path) {
 		return nil
 	}
-	spec, tree := parseFile(path, src)
+	spec, tree, _ := parseFile(path, src)
 	if tree == nil {
 		return nil
 	}
@@ -257,10 +257,10 @@ const maxLeafText = 40
 // (1-indexed, inclusive) are shown; 0 leaves that side open. It returns false
 // when the language is not parsed with tree-sitter.
 func SyntaxTree(path string, src []byte, from, to int) (string, bool) {
-	if spec := specFor(path); spec == nil || spec.grammar == nil {
+	if spec := specFor(path, src); spec == nil || spec.grammar == nil {
 		return "", false
 	}
-	_, tree := parseFile(path, src)
+	_, tree, _ := parseFile(path, src)
 	if tree == nil {
 		return "", false
 	}

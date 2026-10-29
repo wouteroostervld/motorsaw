@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,6 +121,69 @@ func TestSyncIndex(t *testing.T) {
 	// Forcing indexes what has not changed
 	if got := sync(t, database, dir, syncOptions{force: true}); got != (syncStats{indexed: 1}) {
 		t.Errorf("forced = %+v, want 1 indexed", got)
+	}
+}
+
+func TestSyncIndex_NoExtension(t *testing.T) {
+	dir, database := project(t)
+
+	// BCPL from before files had extensions is told by what is in it; other
+	// files without one are passed over
+	for name, content := range map[string]string{
+		"bcp/mcg1": "SECTION \"MCG1\"\n\nLET start() BE\n$( stop(0)\n$)\n",
+		"Makefile": "all:\n\techo $(CC)\n",
+		"LICENSE":  "Do as you like.\n",
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := sync(t, database, dir, syncOptions{}); got != (syncStats{indexed: 3}) {
+		t.Fatalf("first run = %+v, want a.py, sub/b.py and bcp/mcg1 indexed", got)
+	}
+	if got := sync(t, database, dir, syncOptions{}); got != (syncStats{unchanged: 3}) {
+		t.Errorf("second run = %+v, want 3 unchanged", got)
+	}
+	// Named by hand it is taken the same way
+	if got := sync(t, database, filepath.Join(dir, "LICENSE"), syncOptions{}); got != (syncStats{skipped: 1}) {
+		t.Errorf("a text file named by hand = %+v, want it passed over", got)
+	}
+}
+
+func TestSyncOptions_Write(t *testing.T) {
+	busy := errors.New("failed to insert entity: database is locked")
+
+	// Another process is writing: asked again until it is done
+	tries := 0
+	var told bytes.Buffer
+	opts := syncOptions{patience: time.Minute, progress: &told}
+	err := opts.write(func() error {
+		if tries++; tries < 3 {
+			return busy
+		}
+		return nil
+	})
+	if err != nil || tries != 3 {
+		t.Errorf("write = %v after %d tries, want it done at the third", err, tries)
+	}
+	if got := strings.Count(told.String(), "waiting"); got != 1 {
+		t.Errorf("said %d times that it waits, want once:\n%s", got, told.String())
+	}
+
+	// Not for ever
+	tries = 0
+	if err := (syncOptions{}).write(func() error { tries++; return busy }); !db.IsBusy(err) || tries != 2 {
+		t.Errorf("write without patience = %v after %d tries, want the error after one more try", err, tries)
+	}
+	// And any other error is not waited for
+	tries = 0
+	other := errors.New("no such file")
+	if err := opts.write(func() error { tries++; return other }); err != other || tries != 1 {
+		t.Errorf("write = %v after %d tries, want the error at once", err, tries)
 	}
 }
 

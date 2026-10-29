@@ -15,7 +15,6 @@ import (
 	"github.com/wouteroostervld/motorsaw/pkg/chunker"
 	"github.com/wouteroostervld/motorsaw/pkg/config"
 	"github.com/wouteroostervld/motorsaw/pkg/db"
-	"github.com/wouteroostervld/motorsaw/pkg/filter"
 	"github.com/wouteroostervld/motorsaw/pkg/indexer"
 )
 
@@ -45,6 +44,7 @@ needed for large trees or to index something elsewhere.
 Options:
   --force          Index files again even if they have not been modified
   --only KINDS     Only these kinds of index, comma-separated (graph, embeddings)
+  --no-ignore      Also index what git ignores (.gitignore, .git/info/exclude)
   -                Read more paths from standard input, one per line
   -0               With -, paths on standard input end in a NUL byte
 
@@ -59,12 +59,20 @@ Examples:
 // more than this takes long enough that it should be asked for.
 const autoIndexLimit = 1000
 
+// How long a run keeps trying to write to an index that another process is
+// writing to: one that was asked for, and one that a query does in passing
+const (
+	indexPatience = 5 * time.Minute
+	autoPatience  = 5 * time.Second
+)
+
 func handleIndex(args []string) {
 	flags := flag.NewFlagSet("index", flag.ExitOnError)
 	flags.Usage = func() { fmt.Println(indexUsage) }
 	force := flags.Bool("force", false, "")
 	only := flags.String("only", "", "")
 	nul := flags.Bool("0", false, "")
+	noIgnore := flags.Bool("no-ignore", false, "")
 	flags.Parse(args)
 
 	if flags.NArg() == 0 {
@@ -112,7 +120,10 @@ func handleIndex(args []string) {
 	if err != nil {
 		fail("%v", err)
 	}
-	opts := syncOptions{force: *force, progress: os.Stdout, errors: os.Stderr}
+	if *noIgnore {
+		st.walk = newWalk(st.profile, false)
+	}
+	opts := syncOptions{force: *force, progress: os.Stdout, errors: os.Stderr, patience: indexPatience}
 	if *only != "" {
 		if opts.only, err = config.CheckIndexKinds(strings.Split(*only, ",")); err != nil {
 			fail("--only: %v", err)
@@ -126,6 +137,11 @@ func handleIndex(args []string) {
 	stats, err := syncIndex(database, st, roots, opts)
 	if errors.Is(err, indexer.ErrNoEmbedder) {
 		fail("%v.\n\n%s", err, embeddingsHelp)
+	}
+	if db.IsBusy(err) {
+		fail("another motorsaw (the daemon, or an index run) kept writing to the index for more than %v; "+
+			"%d files were indexed and %d are left. Run it again when the other is done.\n(%v)",
+			indexPatience, stats.indexed, stats.pending, err)
 	}
 	if err != nil {
 		fail("%v", err)
@@ -161,6 +177,46 @@ type syncOptions struct {
 	progress io.Writer       // Where to report progress on a long run; nil for silence
 	errors   io.Writer       // Where to report files that could not be indexed; nil for silence
 	log      *slog.Logger    // Reports to the log instead, as the daemon does; nil for the writers
+	// How long to keep trying when another process is writing to the index,
+	// beyond the ten seconds SQLite waits by itself; see write
+	patience time.Duration
+}
+
+// write does something that writes to the index, and does it again when it
+// fails because another process is writing: the daemon in its scan, or an
+// index run in another terminal. It gives up when that has gone on for
+// longer than the run has patience for, with the error of the last try,
+// which db.IsBusy tells.
+func (o syncOptions) write(do func() error) error {
+	var deadline time.Time
+	wait := 200 * time.Millisecond
+	for {
+		err := do()
+		if !db.IsBusy(err) || (o.ctx != nil && o.ctx.Err() != nil) {
+			return err
+		}
+		switch {
+		case deadline.IsZero():
+			deadline = time.Now().Add(o.patience)
+			o.waiting()
+		case time.Now().After(deadline):
+			return err
+		}
+		time.Sleep(wait)
+		if wait *= 2; wait > 5*time.Second {
+			wait = 5 * time.Second
+		}
+	}
+}
+
+// waiting reports that the run waits for another process
+func (o syncOptions) waiting() {
+	switch {
+	case o.log != nil:
+		o.log.Info("Another process is writing to the index, waiting for it")
+	case o.progress != nil:
+		fmt.Fprintln(o.progress, "  another motorsaw is writing to the index, waiting for it...")
+	}
 }
 
 // removed reports a file the index knew that is gone from disk
@@ -216,12 +272,16 @@ func syncIndex(database *db.DB, st *settings, roots []string, opts syncOptions) 
 	// what makes indexing a tree take minutes and not hours
 	resolve := database.DeferResolving(resolveEvery)
 	defer func() {
-		if resolveErr := resolve(); err == nil {
+		// Once the count of who puts it off is down, it can be tried again
+		resolveErr := resolve()
+		if db.IsBusy(resolveErr) {
+			resolveErr = opts.write(database.ResolveSymbols)
+		}
+		if err == nil {
 			err = resolveErr
 		}
 	}()
 
-	profile := st.profile
 	idx, err := st.indexer(database, opts.only...)
 	if err != nil {
 		return stats, err
@@ -273,7 +333,7 @@ func syncIndex(database *db.DB, st *settings, roots []string, opts syncOptions) 
 		if !info.IsDir() {
 			// A file named directly is indexed whatever the configuration
 			// excludes, as long as it can be parsed
-			if chunker.Supported(root) {
+			if chunker.Recognised(root) {
 				check(root, info)
 			} else if !seen[root] {
 				seen[root] = true
@@ -289,15 +349,20 @@ func syncIndex(database *db.DB, st *settings, roots []string, opts syncOptions) 
 			if d.IsDir() {
 				// A directory named by hand is not limited to the included
 				// directories, but excluded ones are skipped as the daemon does
-				if path != root && skipped(root, path, profile.Exclude) {
+				if path != root && st.walk.SkipDir(root, path) {
 					return filepath.SkipDir
 				}
 				return nil
 			}
-			if !d.Type().IsRegular() || !chunker.Supported(path) {
+			if !d.Type().IsRegular() {
 				return nil
 			}
-			if ok, _ := filter.ShouldIndexFile(path, profile.Blacklist, profile.Whitelist); !ok {
+			// What the index holds was recognised before; a file without
+			// an extension has to be read to tell, which is done once
+			if _, held := known[path]; !held && !chunker.Recognised(path) {
+				return nil
+			}
+			if st.walk.SkipFile(root, path) {
 				return nil
 			}
 			if info, err := d.Info(); err == nil {
@@ -321,7 +386,7 @@ func syncIndex(database *db.DB, st *settings, roots []string, opts syncOptions) 
 		if _, err := os.Stat(path); err == nil {
 			continue
 		}
-		if err := idx.ForgetFile(f.ID, path); err != nil {
+		if err := opts.write(func() error { return idx.ForgetFile(f.ID, path) }); err != nil {
 			return stats, err
 		}
 		stats.removed++
@@ -357,7 +422,12 @@ func syncIndex(database *db.DB, st *settings, roots []string, opts syncOptions) 
 			stats.pending = len(todo) - done
 			return stats, ctx.Err()
 		}
-		if err := idx.IndexFile(ctx, path, opts.force); err != nil {
+		if err := opts.write(func() error { return idx.IndexFile(ctx, path, opts.force) }); err != nil {
+			// Every file after this one would wait as long and fail the same
+			if db.IsBusy(err) {
+				stats.pending = len(todo) - done
+				return stats, err
+			}
 			opts.failed(path, err)
 			stats.failed++
 			// A model that is away fails every file the same way
@@ -424,30 +494,15 @@ func removedSummary(n int) string {
 	return fmt.Sprintf("%d removed files detected", n)
 }
 
-// skipped reports whether a walk from root passes a directory by: it is
-// hidden or excluded, or inside one that is. The index walk, the daemon's
-// watches and its pruning all ask here, so that one does not keep what
-// another leaves out.
-func skipped(root, dir string, exclude []string) bool {
-	rel, err := filepath.Rel(root, dir)
-	if err != nil || rel == "." {
-		return false
-	}
-	for _, name := range strings.Split(rel, string(filepath.Separator)) {
-		if strings.HasPrefix(name, ".") {
-			return name != ".." // Not below root: not for this walk to say
-		}
-	}
-	return filter.Excluded(root, dir, exclude)
-}
-
 // autoIndex brings one kind of index up to date with the current directory
 // before it is used, so results never come from stale or missing files. It
 // says what it did on standard error, and leaves a tree that is too large to
-// index in passing for "motorsaw index".
-func autoIndex(database *db.DB, cwd string, kind string) {
+// index in passing for "motorsaw index". When it could not do it, it returns
+// why, for the command to say with its results: they are then from the index
+// as it was.
+func autoIndex(database *db.DB, cwd string, kind string) (stale string) {
 	if cwd == "" {
-		return
+		return ""
 	}
 	st, err := loadSettings()
 	if err != nil {
@@ -458,12 +513,19 @@ func autoIndex(database *db.DB, cwd string, kind string) {
 		limit = autoEmbedLimit
 	}
 	start := time.Now()
-	stats, err := syncIndex(database, st, []string{cwd}, syncOptions{only: []string{kind}, limit: limit, progress: os.Stderr, errors: os.Stderr})
+	stats, err := syncIndex(database, st, []string{cwd}, syncOptions{
+		only: []string{kind}, limit: limit, progress: os.Stderr, errors: os.Stderr, patience: autoPatience,
+	})
 	switch {
+	case db.IsBusy(err):
+		stale = fmt.Sprintf("the %s index could not be brought up to date: another motorsaw (the daemon, or an index run) "+
+			"has been writing to it for more than %v. Results are from the index as it was and may be stale or incomplete; "+
+			"ask again in a moment", kind, time.Since(start).Round(time.Second))
 	case err != nil:
-		fmt.Fprintf(os.Stderr, "note: could not bring the %s index up to date: %v\n", kind, err)
+		stale = fmt.Sprintf("could not bring the %s index up to date: %v (results may be stale or incomplete)", kind, err)
 	case stats.pending > 0:
-		fmt.Fprintf(os.Stderr, "note: %d files here are not in the %s index or have changed, too many to index in passing; run \"motorsaw index .\" (results may be incomplete)\n", stats.pending, kind)
+		stale = fmt.Sprintf("%d files here are not in the %s index or have changed, too many to index in passing; "+
+			"run \"motorsaw index .\" (results may be incomplete)", stats.pending, kind)
 	case stats.indexed > 0 || stats.removed > 0 || stats.failed > 0:
 		fmt.Fprintf(os.Stderr, "note: %s index updated in %v: %d files indexed", kind, time.Since(start).Round(time.Millisecond), stats.indexed)
 		if stats.removed > 0 {
@@ -474,4 +536,8 @@ func autoIndex(database *db.DB, cwd string, kind string) {
 		}
 		fmt.Fprintln(os.Stderr)
 	}
+	if stale != "" {
+		fmt.Fprintf(os.Stderr, "note: %s\n", stale)
+	}
+	return stale
 }

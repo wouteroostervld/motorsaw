@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/wouteroostervld/motorsaw/pkg/chunker"
+	"github.com/wouteroostervld/motorsaw/pkg/filter"
 )
 
 const goSource = `package store
@@ -289,5 +290,75 @@ func TestSearch_ExcludedDirectories(t *testing.T) {
 		if err != nil || len(files) != want {
 			t.Errorf("explicit directory %s: got %d files, err %v, want %d", root, len(files), err, want)
 		}
+	}
+}
+
+func TestSearch_Language(t *testing.T) {
+	dir := t.TempDir()
+	// Nothing in the name or the content says what this is
+	path := filepath.Join(dir, "fragment")
+	if err := os.WriteFile(path, []byte("LET f(x) =\n   x + 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	files, err := Search("x . 1", []string{path}, Options{})
+	if err != nil || len(files) != 1 || files[0].Groups[0].Symbol != "" {
+		t.Fatalf("without a language: %+v, %v; want the match outside any definition", files, err)
+	}
+	for _, paths := range [][]string{{path}, {dir}} {
+		files, err = Search("x . 1", paths, Options{Language: "bcpl"})
+		if err != nil || len(files) != 1 || files[0].Groups[0].Symbol != "f" {
+			t.Errorf("as BCPL, from %v: %+v, %v; want the match in f", paths, files, err)
+		}
+	}
+}
+
+func TestSearch_Gitignore(t *testing.T) {
+	dir := t.TempDir()
+	for name, content := range map[string]string{
+		".git/HEAD":     "ref: refs/heads/main\n",
+		".gitignore":    "build/\n*.log\n",
+		"main.py":       "needle = 1\n",
+		"run.log":       "needle\n",
+		"build/out.py":  "needle = 2\n",
+		"build/out.log": "needle\n",
+	} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	found := func(paths []string, opts Options) []string {
+		t.Helper()
+		files, err := Search("needle", paths, opts)
+		if err != nil {
+			t.Fatal(err)
+		}
+		names := []string{}
+		for _, f := range files {
+			rel, _ := filepath.Rel(dir, f.Path)
+			names = append(names, rel)
+		}
+		return names
+	}
+
+	following := Options{Walk: filter.NewWalk(nil, nil, nil, true)}
+	if got, want := found([]string{dir}, following), []string{"main.py"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("following .gitignore: %v, want %v", got, want)
+	}
+	// A directory that is named is searched though it is ignored; what is
+	// ignored inside it is not
+	if got, want := found([]string{filepath.Join(dir, "build")}, following), []string{"build/out.py"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("the ignored directory, named: %v, want %v", got, want)
+	}
+	// And so is a file that is named
+	if got, want := found([]string{filepath.Join(dir, "run.log")}, following), []string{"run.log"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("an ignored file, named: %v, want %v", got, want)
+	}
+	if got, want := found([]string{dir}, Options{}), []string{"build/out.log", "build/out.py", "main.py", "run.log"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("not following .gitignore: %v, want %v", got, want)
 	}
 }

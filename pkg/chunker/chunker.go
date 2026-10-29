@@ -34,12 +34,17 @@ const (
 	TypeInterface = "INTERFACE"
 	TypeType      = "TYPE"
 	TypePackage   = "PACKAGE"
+	TypeConstant  = "CONSTANT" // A named value: an entry of a BCPL MANIFEST
+	TypeVariable  = "VARIABLE" // A named cell: an entry of a BCPL GLOBAL or STATIC
 )
 
 // Relation types of the references the chunker reports
 const (
 	RelationCalls   = "calls"
 	RelationImports = "imports"
+	// RelationMayCall is a call whose target is named by something that is
+	// not checked, such as the comment after a call through a register
+	RelationMayCall = "may_call"
 )
 
 // minFoldLines is the smallest definition that gets a chunk of its own.
@@ -103,15 +108,39 @@ type Ref struct {
 type File struct {
 	Language string
 	Markup   bool    // A document rather than code: it has chunks, but no symbols
+	FoldCase bool    // Names are the same whatever their case (BCPL of the 1980s)
 	Module   string  // Package name, or the file name without extension
 	Chunks   []Chunk // Chunks[0] is the file skeleton
 	Symbols  []Symbol
 	Refs     []Ref
 }
 
-// Supported reports whether the file's language can be parsed
+// Supported reports whether the file's language can be parsed, going by its
+// name alone. A file whose name does not say what it is may still be parsed
+// when its content shows it; see Recognised.
 func Supported(path string) bool {
-	return specFor(path) != nil
+	return extensions[strings.ToLower(filepath.Ext(path))] != nil
+}
+
+// Language returns the name of the language a file is in, or "" when it is
+// not one that can be parsed. The name of the file says, and where that does
+// not, or not for certain, what is in it.
+func Language(path string, src []byte) string {
+	if spec := specFor(path, src); spec != nil {
+		return spec.name
+	}
+	return ""
+}
+
+// Languages returns the names of the languages that can be parsed, which
+// are the names ParseAs takes
+func Languages() []string {
+	names := make([]string, 0, len(languages))
+	for name := range languages {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Parse splits a source file into semantic chunks and extracts its symbols
@@ -119,7 +148,18 @@ func Supported(path string) bool {
 // where the syntax allows; 0 means no limit. It returns false when the
 // language is not supported.
 func Parse(path string, src []byte, maxChunkSize int) (*File, bool) {
-	spec := specFor(path)
+	return parseWith(specFor(path, src), path, src, maxChunkSize, false)
+}
+
+// ParseAs is Parse for a file that is said to be in a language, whatever
+// its name. It returns false when the language is not one of Languages.
+func ParseAs(language, path string, src []byte, maxChunkSize int) (*File, bool) {
+	return parseWith(languages[strings.ToLower(language)], path, src, maxChunkSize, true)
+}
+
+// parseWith parses a file in the language of a spec. When the language was
+// said and not guessed, the file is taken as it comes, however badly it parses.
+func parseWith(spec *langSpec, path string, src []byte, maxChunkSize int, said bool) (*File, bool) {
 	if spec == nil {
 		return nil, false
 	}
@@ -143,13 +183,20 @@ func Parse(path string, src []byte, maxChunkSize int) (*File, bool) {
 		return b.file, true
 	}
 
-	spec, tree := parseFile(path, src)
+	var tree *sitter.Tree
+	var foldCase bool
+	if said {
+		tree, foldCase = spec.parse(src, true)
+	} else {
+		spec, tree, foldCase = parseFile(path, src)
+	}
 	if tree == nil {
 		return nil, false
 	}
 	defer tree.Close()
 	b.spec = spec
 	b.file.Language = spec.name
+	b.file.FoldCase = foldCase
 
 	root := tree.RootNode()
 	b.collectImports(root)
@@ -170,12 +217,13 @@ func Parse(path string, src []byte, maxChunkSize int) (*File, bool) {
 // stands for. Where the extension is shared, as .asm is by the assemblers of
 // every processor, the file is read as the language it has the fewest errors
 // in; the first of them wins a tie.
-func parseFile(path string, src []byte) (*langSpec, *sitter.Tree) {
+func parseFile(path string, src []byte) (*langSpec, *sitter.Tree, bool) {
 	var best *langSpec
 	var bestTree *sitter.Tree
+	var bestFold bool
 	bestShare := 2.0
-	for _, spec := range specsFor(path) {
-		tree := spec.parse(src)
+	for _, spec := range specsFor(path, src) {
+		tree, foldCase := spec.parse(src, false)
 		if tree == nil {
 			continue
 		}
@@ -183,31 +231,39 @@ func parseFile(path string, src []byte) (*langSpec, *sitter.Tree) {
 			if bestTree != nil {
 				bestTree.Close()
 			}
-			best, bestTree, bestShare = spec, tree, share
+			best, bestTree, bestFold, bestShare = spec, tree, foldCase, share
 		} else {
 			tree.Close()
 		}
 	}
-	return best, bestTree
+	return best, bestTree, bestFold
 }
 
-// parse returns the syntax tree of a file, which the caller closes; nil when
+// parse returns the syntax tree of a file, which the caller closes, and whether
+// its names are the same whatever their case; nil when
 // the file is not in the language
-func (s *langSpec) parse(src []byte) *sitter.Tree {
+func (s *langSpec) parse(src []byte, said bool) (*sitter.Tree, bool) {
 	parser := sitter.NewParser()
 	defer parser.Close()
 	if err := parser.SetLanguage(s.language()); err != nil {
-		return nil
+		return nil, false
 	}
-	tree := parser.Parse(src, nil)
+	var tree *sitter.Tree
+	var foldCase bool
+	if s.prepare != nil {
+		tree, foldCase = s.prepare(parser, src)
+	} else {
+		tree = parser.Parse(src, nil)
+	}
 	if tree == nil {
-		return nil
+		return nil, false
 	}
-	if s.shared && !parsesWell(tree.RootNode()) {
+	// A file said to be in the language is taken however badly it parses
+	if s.shared && !said && !parsesWell(tree.RootNode()) {
 		tree.Close()
-		return nil
+		return nil, false
 	}
-	return tree
+	return tree, foldCase
 }
 
 // errorShare is the part of the top-level nodes of a tree that have errors in them
@@ -287,6 +343,10 @@ type builder struct {
 	imports  map[string]importInfo
 	seen     map[Ref]bool
 	symFolds []*fold // Fold holding each symbol, parallel to file.Symbols
+
+	// Assembly: what the address registers were last loaded with, by
+	// register, while it can still be what a call goes through
+	loads map[string]*m68kLoad
 }
 
 func (b *builder) text(n *sitter.Node) string {
