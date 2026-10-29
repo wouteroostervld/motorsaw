@@ -523,6 +523,19 @@ To read on:
 The agent skill (`share/skills/motorsaw`) tells agents what such a refusal
 is and how to read on.
 
+**Switching it in a session.** `motorsaw hook mode deny|context|off` writes
+the mode to `.claude/motorsaw-read-hook` in the project, which the hook reads
+on every Read and which comes before `MOTORSAW_READ_HOOK`; `motorsaw hook mode
+default` removes it, and `motorsaw hook mode` shows the mode in force and where
+it comes from. The project is `$CLAUDE_PROJECT_DIR`, or the nearest directory
+with a `.claude` directory; the hook looks for the file from there and from
+the session's directory upwards, so agents in worktrees under the project are
+switched with it. As a slash command, copy
+`share/claude/commands/read-hook.md` to the project's `.claude/commands/` (or
+to `~/.claude/commands/` for every project), and type `/read-hook off`,
+`/read-hook deny` or `/read-hook`. Like the environment, the file holds for
+everything that runs in the project, not for one session.
+
 **Switching it off.** Set `MOTORSAW_READ_HOOK` to `off` in the same `env`, or
 remove the hook; `/hooks` in Claude Code shows it and can turn it off, and
 `"disableAllHooks": true` turns off every hook. The variable is read from the

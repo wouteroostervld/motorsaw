@@ -217,5 +217,5 @@ you need from the outline and read them with `offset` and `limit`, or run the
 `motorsaw outline --body` it names. If you do need the whole file, read it
 again: a second whole read of the same file goes through.
 
-The user switches it with `MOTORSAW_READ_HOOK` in the settings' `env`
-(`deny`, `context`, or `off`); do not change it yourself.
+The user switches it, with `MOTORSAW_READ_HOOK` in the settings' `env` or
+with `/read-hook` (`motorsaw hook mode`); do not change it yourself.

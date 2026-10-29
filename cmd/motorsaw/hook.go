@@ -14,6 +14,7 @@ import (
 )
 
 const hookUsage = `Usage: motorsaw hook read
+       motorsaw hook mode [deny|context|off|default]
 
 A Claude Code PreToolUse hook for the Read tool. When an agent reads a large
 source file whole, the hook hands it the file's outline, so that it can read
@@ -24,6 +25,16 @@ of it gets it.
 
 Reads the hook's JSON on standard input and writes its answer on standard
 output. It never fails a read: on any error it says nothing.
+
+"motorsaw hook mode" switches the hook for a project from within a session,
+for instance from a slash command: it writes the mode to the file
+.claude/motorsaw-read-hook in the project, which the hook reads on every Read
+and which comes before the environment. "default" removes the file, and with
+it what the environment says holds again; with no mode it shows the mode in
+force and where it comes from. The project is $CLAUDE_PROJECT_DIR, or else the
+nearest directory up from here with a .claude directory. The hook looks for
+the file from $CLAUDE_PROJECT_DIR and from the session's directory upwards, so
+agents in worktrees under the project are switched too.
 
 Environment:
   MOTORSAW_READ_HOOK        off (the default): do nothing
@@ -43,6 +54,7 @@ In settings.json:
 // hookInput is the part of a PreToolUse hook's input the read hook uses
 type hookInput struct {
 	SessionID string `json:"session_id"`
+	Cwd       string `json:"cwd"`
 	ToolName  string `json:"tool_name"`
 	ToolInput struct {
 		FilePath string          `json:"file_path"`
@@ -68,6 +80,39 @@ type readHookConfig struct {
 	minLines int
 	maxBytes int
 	stateDir string // where the files already outlined in a session are kept
+	// project finds the mode a project was switched to, for the session's
+	// directory; "" when it was not switched
+	project func(cwd string) string
+}
+
+// modeFile is where "motorsaw hook mode" keeps a project's mode
+const modeFile = ".claude/motorsaw-read-hook"
+
+// readModes are the modes the hook knows
+var readModes = map[string]bool{"off": true, "context": true, "deny": true}
+
+// projectMode finds the mode file for a session's directory: in
+// $CLAUDE_PROJECT_DIR, or in the directory or one of those above it
+func projectMode(cwd string) (mode, file string) {
+	var dirs []string
+	if p := os.Getenv("CLAUDE_PROJECT_DIR"); p != "" {
+		dirs = append(dirs, p)
+	}
+	for d := cwd; d != "" && filepath.IsAbs(d); d = filepath.Dir(d) {
+		dirs = append(dirs, d)
+		if filepath.Dir(d) == d {
+			break
+		}
+	}
+	for _, d := range dirs {
+		f := filepath.Join(d, modeFile)
+		if b, err := os.ReadFile(f); err == nil {
+			if m := strings.ToLower(strings.TrimSpace(string(b))); readModes[m] {
+				return m, f
+			}
+		}
+	}
+	return "", ""
 }
 
 func readHookConfigFromEnv() readHookConfig {
@@ -82,10 +127,15 @@ func readHookConfigFromEnv() readHookConfig {
 		minLines: number("MOTORSAW_READ_HOOK_LINES", 300),
 		maxBytes: number("MOTORSAW_READ_HOOK_MAX", 16000),
 		stateDir: filepath.Join(os.TempDir(), "motorsaw-read-hook"),
+		project:  func(cwd string) string { m, _ := projectMode(cwd); return m },
 	}
 }
 
 func handleHook(args []string) {
+	if len(args) >= 1 && args[0] == "mode" && len(args) <= 2 {
+		handleHookMode(args[1:])
+		return
+	}
 	if len(args) != 1 || args[0] != "read" {
 		fmt.Println(hookUsage)
 		os.Exit(1)
@@ -98,11 +148,16 @@ func handleHook(args []string) {
 
 // readHook decides about one Read. nil leaves the read alone.
 func readHook(stdin io.Reader, cfg readHookConfig) *hookOutput {
-	if cfg.mode != "context" && cfg.mode != "deny" {
-		return nil
-	}
 	var in hookInput
 	if err := json.NewDecoder(stdin).Decode(&in); err != nil || in.ToolName != "Read" {
+		return nil
+	}
+	if cfg.project != nil {
+		if m := cfg.project(in.Cwd); m != "" {
+			cfg.mode = m
+		}
+	}
+	if cfg.mode != "context" && cfg.mode != "deny" {
 		return nil
 	}
 	if given(in.ToolInput.Offset) || given(in.ToolInput.Limit) {
@@ -206,4 +261,54 @@ func firstWholeRead(dir, session, path string) bool {
 		f.Close()
 	}
 	return true
+}
+
+// handleHookMode shows or sets the mode of the read hook for the project
+func handleHookMode(args []string) {
+	cwd := workingDir()
+	if len(args) == 0 {
+		if m, f := projectMode(cwd); m != "" {
+			fmt.Printf("read hook: %s, set for the project in %s\n", m, f)
+			return
+		}
+		m := strings.ToLower(strings.TrimSpace(os.Getenv("MOTORSAW_READ_HOOK")))
+		if !readModes[m] {
+			m = "off"
+		}
+		fmt.Printf("read hook: %s, from MOTORSAW_READ_HOOK (the project has not switched it)\n", m)
+		return
+	}
+
+	mode := strings.ToLower(args[0])
+	if !readModes[mode] && mode != "default" {
+		fail("the mode is deny, context, off or default, not %q", args[0])
+	}
+	dir := os.Getenv("CLAUDE_PROJECT_DIR")
+	if dir == "" {
+		for d := cwd; ; d = filepath.Dir(d) {
+			if info, err := os.Stat(filepath.Join(d, ".claude")); err == nil && info.IsDir() {
+				dir = d
+				break
+			}
+			if filepath.Dir(d) == d {
+				dir = cwd
+				break
+			}
+		}
+	}
+	file := filepath.Join(dir, modeFile)
+	if mode == "default" {
+		if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
+			fail("%v", err)
+		}
+		fmt.Printf("read hook: back to MOTORSAW_READ_HOOK for %s\n", dir)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(file), 0755); err != nil {
+		fail("%v", err)
+	}
+	if err := os.WriteFile(file, []byte(mode+"\n"), 0644); err != nil {
+		fail("%v", err)
+	}
+	fmt.Printf("read hook: %s for %s, from the next Read on (in %s)\n", mode, dir, file)
 }

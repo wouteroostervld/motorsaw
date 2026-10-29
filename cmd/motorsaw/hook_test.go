@@ -107,3 +107,51 @@ func TestReadHook(t *testing.T) {
 		t.Errorf("a long outline is cut: got %+v", out)
 	}
 }
+
+func TestReadHookProjectMode(t *testing.T) {
+	t.Setenv("CLAUDE_PROJECT_DIR", "")
+	big := writeBig(t, 400)
+	project := t.TempDir()
+	nested := filepath.Join(project, ".claude", "worktrees", "agent", "src")
+	if err := os.MkdirAll(nested, 0755); err != nil {
+		t.Fatal(err)
+	}
+	set := func(mode string) {
+		if err := os.WriteFile(filepath.Join(project, modeFile), []byte(mode+"\n"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	in := func(session, cwd string) *strings.Reader {
+		return strings.NewReader(fmt.Sprintf(`{"session_id":%q,"cwd":%q,"tool_name":"Read","tool_input":{"file_path":%q}}`, session, cwd, big))
+	}
+	cfg := func(env string) readHookConfig {
+		return readHookConfig{mode: env, minLines: 300, maxBytes: 16000, stateDir: t.TempDir(),
+			project: func(cwd string) string { m, _ := projectMode(cwd); return m }}
+	}
+
+	// Not switched: the environment decides
+	if readHook(in("a", project), cfg("")) != nil {
+		t.Error("no file and no environment: the read must be left alone")
+	}
+	// The project switched it on, against the environment, also for an agent in a worktree below it
+	set("deny")
+	if out := readHook(in("b", nested), cfg("off")); out == nil || out.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Errorf("the project's deny must win over MOTORSAW_READ_HOOK=off, got %+v", out)
+	}
+	// ... and off, against the environment
+	set("off")
+	if out := readHook(in("c", project), cfg("deny")); out != nil {
+		t.Errorf("the project's off must win over MOTORSAW_READ_HOOK=deny, got %+v", out)
+	}
+	// A file that says nothing the hook knows is no switch
+	set("maybe")
+	if out := readHook(in("d", project), cfg("deny")); out == nil {
+		t.Error("an unknown mode in the file must leave the environment in force")
+	}
+	// $CLAUDE_PROJECT_DIR is looked in even when the session is elsewhere
+	set("off")
+	t.Setenv("CLAUDE_PROJECT_DIR", project)
+	if m, f := projectMode(t.TempDir()); m != "off" || f != filepath.Join(project, modeFile) {
+		t.Errorf("projectMode with CLAUDE_PROJECT_DIR = %q, %q", m, f)
+	}
+}
