@@ -8,6 +8,9 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/motorsaw daemon start
+# "systemctl --user reload motorsawd" after changing ~/.motorsaw/config.yaml:
+# the daemon reads it again, without stopping
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
 

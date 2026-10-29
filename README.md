@@ -214,7 +214,8 @@ at any time.
 
 A daemon is optional: `motorsaw daemon start` watches the directories you
 configured and indexes what changes, so that a query finds the index up to
-date already. See [The index](MANUAL.md#the-index) in the manual.
+date already. It reads the configuration again on SIGHUP
+(`systemctl --user reload motorsawd`). See [The index](MANUAL.md#the-index) in the manual.
 
 ## License
 

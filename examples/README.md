@@ -50,6 +50,7 @@ Systemd user service unit file for running Motorsaw daemon.
 
 Features:
 - Automatic restart on failure
+- Reload of the configuration without a restart (`systemctl --user reload motorsawd`, SIGHUP)
 - Graceful shutdown (30s timeout for WAL flush)
 - Resource limits (2GB RAM, 80% CPU)
 - Security hardening (PrivateTmp, ProtectSystem)

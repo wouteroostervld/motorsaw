@@ -17,6 +17,7 @@ import (
 	"sync"
 
 	"github.com/wouteroostervld/motorsaw/pkg/chunker"
+	"github.com/wouteroostervld/motorsaw/pkg/filter"
 	"github.com/wouteroostervld/motorsaw/pkg/pcre"
 )
 
@@ -28,7 +29,7 @@ type Options struct {
 	IgnoreCase bool
 	Fixed      bool     // The pattern is a literal string, not a regular expression
 	Word       bool     // The pattern must match whole words
-	Exclude    []string // Names of directories to skip, besides hidden ones
+	Exclude    []string // Directories to skip, besides hidden ones (see filter.Excluded)
 	Signature  bool     // Only matches in the signature of a definition count: in it, before its body
 }
 
@@ -120,12 +121,13 @@ func Match(query *chunker.Query, paths []string, opts Options) ([]File, error) {
 // walk calls search for the files named, and for the regular files under
 // the directories named. Hidden and excluded directories are skipped.
 func walk(paths, excluded []string, search func(path string)) error {
-	exclude := make(map[string]bool, len(excluded))
-	for _, name := range excluded {
-		exclude[strings.TrimSuffix(name, "/")] = true
-	}
 	for _, root := range paths {
 		info, err := os.Stat(root)
+		if err != nil {
+			return err
+		}
+		// Excluded directories are told by their absolute path
+		from, err := filepath.Abs(root)
 		if err != nil {
 			return err
 		}
@@ -140,7 +142,9 @@ func walk(paths, excluded []string, search func(path string)) error {
 			}
 			name := d.Name()
 			if d.IsDir() {
-				if path != root && (strings.HasPrefix(name, ".") || exclude[name]) {
+				// A directory named on the command line is searched even
+				// when it is hidden or excluded, or inside one that is
+				if path != root && (strings.HasPrefix(name, ".") || filter.Excluded(from, filepath.Join(from, path[len(root):]), excluded)) {
 					return filepath.SkipDir
 				}
 				return nil

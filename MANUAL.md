@@ -74,8 +74,9 @@ one.
 | `--expand body\|file\|calls` | Show the code, see [below](#showing-code---expand) |
 
 Without a path the current directory is searched. Hidden directories and the
-`exclude` directories of your configuration are skipped; a file named
-explicitly is always searched. `^` and `$` match at line ends. No index is
+`exclude` directories of your configuration are skipped, as they are by
+`motorsaw index` and the daemon; a file or directory named explicitly is
+always searched. `^` and `$` match at line ends. No index is
 needed, so results are always current.
 
 `-s` is the quick way to answer "which functions touch this": it is the list
@@ -616,6 +617,22 @@ same for one run, and win over the configuration. A kind that is named is
 still only built where it is switched on. Files that change while the daemon
 runs are indexed in every kind that is on for them, whatever the scan does.
 
+Before it scans, the daemon makes the index forget the files under the
+`include` directories that your configuration ignores: those in a directory
+that is hidden or in `exclude`, and those the `blacklist` rejects. So a
+directory you exclude after it was indexed leaves the index, and with it a
+file there that you indexed by name. What you indexed by hand outside the
+`include` directories is left alone. No file on disk is touched.
+
+After changing `~/.motorsaw/config.yaml`, send the daemon a SIGHUP, with
+`systemctl --user reload motorsawd` when it runs as the service of
+`examples/motorsawd.service`, or with `kill -HUP`. It is a warm restart: the
+daemon reads the configuration again, sets its watches to the directories
+that are included now (also the ones made since it started), prunes, and
+scans as when it starts. A configuration that cannot be used is reported in
+the log and the daemon carries on with the one it had. The flags it was
+started with still hold.
+
 The index is `~/.motorsaw/graph.db`. It holds names, locations, edges and,
 when embeddings are on, vectors. It holds no source text: the code a query
 or a search shows (`snippet`, `--expand`) is read from the files when it is
@@ -805,7 +822,9 @@ profiles:
       - '\.min\.js$'
 ```
 
-Write directory names without a trailing slash. A project's `.config.yaml`
+An `exclude` entry is the name of a directory (`vendor`), a glob for one
+(`*.cache`), several names in a row (`tools/ghidra`) or an absolute path; a
+slash at the end is allowed. A project's `.config.yaml`
 can add to `exclude` and `blacklist` and set `index` and `follow`. Of the settings of
 older versions, `embedding_model` still names the model when `embeddings:`
 does not (and, as before, switches nothing on); `chunk_size`, `overlap`,
