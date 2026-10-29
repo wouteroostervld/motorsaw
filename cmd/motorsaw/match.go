@@ -51,6 +51,7 @@ Options:
   --writes NAME    Instead of a query: the places that assign a variable, field
                    or property of this name, or an element of one (=, +=, ++,
                    and in PHP =&). Go, PHP, Python, JavaScript, TypeScript, C
+  --no-ignore      Also search what git ignores
   --tree           Show the syntax tree of a file instead of searching
   --lines N-M      With --tree, only the nodes on these lines
   -s               Only list the definitions that contain a match, with a count
@@ -95,6 +96,7 @@ func handleMatch(args []string) {
 	tree := flags.Bool("tree", false, "")
 	lines := flags.String("lines", "", "")
 	writes := flags.String("writes", "", "")
+	noIgnore := flags.Bool("no-ignore", false, "")
 	shaped := shapeFlags(flags)
 	given := parse(flags, args)
 
@@ -122,7 +124,7 @@ func handleMatch(args []string) {
 	defer query.Close()
 
 	files, err := grep.Match(query, absolute(given[1:]), grep.Options{
-		Exclude:   activeProfile().Exclude,
+		Walk:      newWalk(activeProfile(), !*noIgnore),
 		Signature: *signature,
 	})
 	if err != nil {

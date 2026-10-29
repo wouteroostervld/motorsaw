@@ -35,6 +35,28 @@ there is no model to pull and no service to run, unless you switch on
 `search`. `grep` and `outline` work straight away; `query` indexes what it
 needs by itself.
 
+### Upgrading
+
+`make install` builds the new version in place. Then, if the daemon runs,
+restart it (`systemctl --user restart motorsawd`) in the same step: a new
+version may upgrade the index when it first opens it, and an older one then
+refuses it. What changed that you may notice:
+
+- **Index schema 3.3.0** (reuse of embeddings): a 3.2.0 index is upgraded in
+  place, its vectors kept; the upgrade cannot be undone, so the daemon and
+  the command line have to be the same version.
+- **What git ignores is left out**, and the daemon prunes, when it starts and
+  on SIGHUP, what is left out now: gitignored files, hidden and excluded
+  directories, the blacklist. The first start after the upgrade can drop
+  much of the index. Keep a gitignored tree indexed with `gitignore: false`
+  for its project (below), or a whitelist entry. The excludes and blacklist
+  of a project's `.config.yaml` are read now, which they were not before.
+- **The service file has an `ExecReload` line**, for `systemctl --user reload
+  motorsawd`; install `examples/motorsawd.service` again to have it.
+- **BCPL and 68000 sources** are read better (the old dialect, files without
+  an extension, calls through a register): run `motorsaw index --force` on
+  those trees, since unchanged files are not read again.
+
 ## grep
 
 ```bash

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/wouteroostervld/motorsaw/pkg/chunker"
@@ -90,7 +89,7 @@ func (e *Embeddings) Index(ctx context.Context, src *Source) error {
 				// Where a folded definition is says nothing about what it
 				// does, and moves with every edit above it. The index has
 				// the lines of each chunk.
-				text := foldedLines.ReplaceAllString(p.text, "... chunk")
+				text := chunker.FoldedLines.ReplaceAllString(p.text, "... chunk")
 				chunks = append(chunks, db.EmbeddingChunk{StartLine: p.startLine, EndLine: p.endLine, Title: c.Title, Key: textKey(model, c.Title, text)})
 				texts = append(texts, embed.DocumentText(model, context+"\n\n"+text))
 			}
@@ -137,9 +136,6 @@ func (e *Embeddings) Index(ctx context.Context, src *Source) error {
 	}
 	return e.store.InsertEmbeddings(src.FileID, e.embedder.Model(), chunks)
 }
-
-// foldedLines is the line range the chunker writes after a folded definition
-var foldedLines = regexp.MustCompile(`\.\.\. chunk: lines \d+-\d+`)
 
 // textKey identifies the text of a chunk for reuse of its vector. The path
 // that heads what is sent to the model is left out, so the same code in

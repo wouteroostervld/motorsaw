@@ -19,6 +19,7 @@ package chunker
 import (
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -787,7 +788,12 @@ func (b *builder) render(f *fold, parent int) {
 	}
 }
 
-// stub is the text that stands in for a fold in its parent
+// FoldedLines matches the line range a stub gives after a folded definition
+// ("... chunk: lines 12-40"), for whoever needs the text without it
+var FoldedLines = regexp.MustCompile(`\.\.\. chunk: lines \d+-\d+`)
+
+// stub is the text that stands in for a fold in its parent; FoldedLines
+// matches its line range
 func (b *builder) stub(f *fold) string {
 	return fmt.Sprintf("%s%s %s ... chunk: lines %d-%d%s", f.indent, f.header, b.spec.comment, f.startRow+1, f.endRow+1, b.spec.commentEnd)
 }

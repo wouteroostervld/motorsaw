@@ -206,7 +206,7 @@ or after the pattern, query or file.
 | `... \| cut -c1-160` | `--width 160`, on `grep`, `outline`, `query` and `search` |
 | `outline --expand X f \| sed -n '/X/,/^}/p'` | `outline --body X f` |
 | `query ... \| grep name \| sed ...` | `query --oneline`: one row a line, values separated by tabs |
-| `search ... \| grep File` | `search --oneline`: `path:lines`, distance, name |
+| `search ... \| grep File` | `search --oneline`: `path:lines`, distance, name (the path alone for a file that changed since it was embedded: its lines are no longer right) |
 | `for f in ...; do motorsaw outline $f; done` | `motorsaw outline a.go b.go` |
 
 `grep --oneline` writes `path:line: [definition] text`, and with `-s`

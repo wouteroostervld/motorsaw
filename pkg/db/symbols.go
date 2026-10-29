@@ -572,7 +572,12 @@ func selectTargets(r pendingRef, cands []candidate, follows []string) ([]int64, 
 
 	// Named through an import: the definition must be in that file or directory
 	if r.importBase != "" {
-		matched := filter(func(c candidate) bool { return matchesImport(c.path, r.importBase) })
+		matched := filter(func(c candidate) bool { return matchesImport(c.path, r.importBase, false) })
+		if len(matched) == 0 {
+			// GET "LIBHDR" names libhdr.h: only when nothing has the case
+			// the import gives, so that other languages keep exact names
+			matched = filter(func(c candidate) bool { return matchesImport(c.path, r.importBase, true) })
+		}
 		ids, _ := nearest(r.path, matched)
 		return ids, weightExact
 	}
@@ -683,14 +688,15 @@ func (db *DB) SetProjectFollows(root string, dirs []string) error {
 }
 
 // matchesImport reports whether a file can be what an import path ending in
-// base refers to: the file itself (utils.py) or a file in that directory (db/x.go).
-func matchesImport(path, base string) bool {
-	// Whatever the case: GET "LIBHDR" names libhdr.h, and file systems differ
+// base refers to: the file itself (utils.py) or a file in that directory
+// (db/x.go). With fold, the case of the names does not count.
+func matchesImport(path, base string, fold bool) bool {
+	same := func(a, b string) bool { return a == b || (fold && strings.EqualFold(a, b)) }
 	file := filepath.Base(path)
-	if strings.EqualFold(strings.TrimSuffix(file, filepath.Ext(file)), base) {
+	if same(strings.TrimSuffix(file, filepath.Ext(file)), base) {
 		return true
 	}
-	return strings.EqualFold(filepath.Base(filepath.Dir(path)), base)
+	return same(filepath.Base(filepath.Dir(path)), base)
 }
 
 // nearest returns the candidates closest to the referencing file: in the same

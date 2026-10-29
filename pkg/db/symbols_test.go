@@ -416,7 +416,24 @@ func TestSelectTargets_CodeBeforeData(t *testing.T) {
 }
 
 func TestMatchesImport_AnyCase(t *testing.T) {
-	if !matchesImport("/proj/g/libhdr.h", "LIBHDR") || !matchesImport("/proj/LCGHDR", "lcghdr") || matchesImport("/proj/g/libhdr.h", "lib") {
-		t.Error("an import should name its file whatever the case, and no other")
+	if !matchesImport("/proj/g/libhdr.h", "LIBHDR", true) || !matchesImport("/proj/LCGHDR", "lcghdr", true) || matchesImport("/proj/g/libhdr.h", "lib", true) {
+		t.Error("folded, an import should name its file whatever the case, and no other")
+	}
+	if matchesImport("/proj/g/libhdr.h", "LIBHDR", false) || !matchesImport("/proj/db/x.go", "db", false) {
+		t.Error("unfolded, an import should name its file in the same case only")
+	}
+}
+
+// The case of a name only stops counting when no file has the case the
+// import gives: Go's "db" does not also reach a directory named DB
+func TestSelectTargets_ImportCaseFirst(t *testing.T) {
+	ref := pendingRef{root: "/proj", path: "/proj/main.go", name: "Open", importBase: "db", relationType: "calls"}
+	exact := candidate{entityID: 1, entityType: "FUNCTION", path: "/proj/db/open.go", root: "/proj"}
+	other := candidate{entityID: 2, entityType: "FUNCTION", path: "/proj/DB/open.go", root: "/proj"}
+	if ids, _ := selectTargets(ref, []candidate{exact, other}, nil); !reflect.DeepEqual(ids, []int64{1}) {
+		t.Errorf("targets = %v, want only the exact case when there is one", ids)
+	}
+	if ids, _ := selectTargets(ref, []candidate{other}, nil); !reflect.DeepEqual(ids, []int64{2}) {
+		t.Errorf("targets = %v, want the other case when nothing else matches", ids)
 	}
 }
