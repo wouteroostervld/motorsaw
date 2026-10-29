@@ -21,7 +21,8 @@ Searches the current directory when no path is given.
 A query is a pattern of nodes, written as the tree is: (kind field: (kind)).
 A node is captured with @name; a pattern that captures nothing is reported as
 a whole. Conditions on the text of a capture come last, between brackets of
-their own. --tree shows the tree of a file, to write a query from.
+their own. --tree shows the tree of a file, to write a query from: nodes
+between brackets, keywords and signs between quotes, each as a query writes it.
 
   (kind)                       A node of that kind
   (kind (other))               ...with a node of the other kind right below it
