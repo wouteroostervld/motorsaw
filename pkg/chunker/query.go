@@ -3,6 +3,7 @@ package chunker
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	sitter "github.com/tree-sitter/go-tree-sitter"
@@ -253,7 +254,8 @@ const maxLeafText = 40
 
 // SyntaxTree writes out the syntax tree of a file as a query sees it: a named
 // node on a line, with the field it is in, its kind and its lines, and its
-// text when nothing is below it. Only nodes that touch the lines from..to
+// text when nothing is below it; a keyword or sign on a line, between quotes,
+// as a query writes it. Only nodes that touch the lines from..to
 // (1-indexed, inclusive) are shown; 0 leaves that side open. It returns false
 // when the language is not parsed with tree-sitter.
 func SyntaxTree(path string, src []byte, from, to int) (string, bool) {
@@ -298,6 +300,14 @@ func SyntaxTree(path string, src []byte, from, to int) (string, bool) {
 				fmt.Fprintf(&out, "  [%d-%d]\n", first, last)
 			}
 			depth++
+		} else if !n.IsMissing() {
+			// A keyword or sign has no kind of its own: a query names it by
+			// its text, between quotes, and so it is shown
+			out.WriteString(strings.Repeat("  ", depth))
+			if field := cursor.FieldName(); field != "" {
+				out.WriteString(field + ": ")
+			}
+			fmt.Fprintf(&out, "%s  [%d]\n", strconv.Quote(n.Kind()), first)
 		}
 		if cursor.GotoFirstChild() {
 			for {

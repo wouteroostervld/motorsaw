@@ -124,18 +124,26 @@ func TestSyntaxTree(t *testing.T) {
 	}
 	want := strings.NewReplacer("N", strconv.Itoa(line)).Replace(`(source_file)  [1-N]
   (function_declaration)  [N]
+    "func"  [N]
     name: (identifier) check  [N]
     parameters: (parameter_list)  [N]
+      "("  [N]
       (parameter_declaration)  [N]
         name: (identifier) data  [N]
         type: (slice_type)  [N]
+          "["  [N]
+          "]"  [N]
           element: (type_identifier) byte  [N]
+      ")"  [N]
     result: (type_identifier) error  [N]
     body: (block)  [N]
+      "{"  [N]
       (statement_list)  [N]
         (return_statement)  [N]
+          "return"  [N]
           (expression_list)  [N]
             (nil) nil  [N]
+      "}"  [N]
 `)
 	if got != want {
 		t.Errorf("got\n%s\nwant\n%s", got, want)

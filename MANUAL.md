@@ -177,16 +177,25 @@ sees it, to write the query from:
 $ motorsaw match --tree --lines 213 pkg/grep/grep.go
 (source_file)  [1-279]
   (function_declaration)  [213-231]
+    "func"  [213]
     name: (identifier) matchFile  [213]
     parameters: (parameter_list)  [213]
+      "("  [213]
       (parameter_declaration)  [213]
         name: (identifier) re  [213]
         type: (pointer_type)  [213]
+          "*"  [213]
           (qualified_type)  [213]
             package: (package_identifier) pcre  [213]
+            "."  [213]
             name: (type_identifier) Regexp  [213]
       ...
 ```
+
+A node with a kind is written between brackets, with its text when nothing is
+below it. A keyword or sign has no kind of its own and is written between
+quotes, which is also how a query asks for it:
+`(binary_expression operator: "*")`.
 
 A query is tried on every language and searches the files of the languages
 it fits, so `(identifier)` looks in nearly all of them and

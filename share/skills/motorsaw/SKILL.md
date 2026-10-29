@@ -80,6 +80,7 @@ motorsaw match '(function_definition parameters: (parameter_list . (parameter) .
   `(_)` is any node; `.` between nodes means "directly follows".
 - Conditions come last in a pattern that has brackets of its own:
   `(#eq? @x "text")`, `(#match? @x "^re")`, `(#any-of? @x "a" "b")`.
+- A keyword or operator is matched by its text in quotes: `(binary_expression "*")`.
 - Kinds and fields differ between languages. **Look at `--tree` of a real
   file first** instead of guessing them. A query searches the languages
   whose grammar it fits, and of several patterns each language takes the
