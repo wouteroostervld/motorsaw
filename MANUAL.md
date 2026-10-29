@@ -14,6 +14,7 @@ code by what it means; it needs a model and is off until you switch it on.
 - [query](#query): the code graph
 - [search](#search): by meaning, when embeddings are switched on
 - [Showing code: --expand](#showing-code---expand)
+- [For Claude Code: hook read](#for-claude-code-hook-read): the outline instead of a large file read whole
 - [The index](#the-index)
 - [Kinds of index](#kinds-of-index): what is on, and where
 - [The graph](#the-graph)
@@ -457,6 +458,34 @@ motorsaw query --expand file 'MATCH (f)-[:calls]->(t {name: "nearest"}) RETURN f
 
 `body` is the smallest and usually enough. `file` shows where the code sits.
 `calls` is for following the code without opening more files.
+
+## For Claude Code: hook read
+
+`motorsaw hook read` is a Claude Code `PreToolUse` hook for the `Read` tool.
+When an agent reads a large source file whole, it is handed the file's
+outline, so that it can read the lines it needs instead. A read with an offset
+or a limit, a small file, a file motorsaw cannot parse, and a second whole
+read of the same file in a session are left alone: an agent that does need
+all of it gets it.
+
+It is off until it is switched on, so installing it changes nothing:
+
+```json
+"hooks": {"PreToolUse": [{"matcher": "Read",
+  "hooks": [{"type": "command", "command": "motorsaw hook read"}]}]},
+"env": {"MOTORSAW_READ_HOOK": "deny"}
+```
+
+| Variable | |
+|---|---|
+| `MOTORSAW_READ_HOOK` | `off` (the default) does nothing. `deny` refuses the first whole read and gives the outline in its place. `context` lets the read go ahead with the outline added, which helps the agent find its way but saves no tokens. |
+| `MOTORSAW_READ_HOOK_LINES` | Files with fewer lines are left alone (default 300). |
+| `MOTORSAW_READ_HOOK_MAX` | The longest outline handed over, in bytes (default 16000). |
+
+The switch makes a comparison easy: the same task with the hook on and off.
+Every token a session reads early is read again, from the cache, on each
+later call, so `deny` is the setting that saves: on a 105 KB generated file
+the agent gets a 12.5 KB outline instead.
 
 ## The index
 

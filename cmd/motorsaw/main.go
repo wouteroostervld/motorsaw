@@ -30,6 +30,9 @@ Keeping the index:
   daemon start               Watch for changes and keep the index current
   migrate                    Move an installation made as chainsaw over to motorsaw
 
+For Claude Code:
+  hook read                  A PreToolUse hook that hands an agent the outline of a large file it reads whole
+
 Run a command with --help for its options.`
 
 func main() {
@@ -39,7 +42,7 @@ func main() {
 	}
 
 	switch os.Args[1] {
-	case "migrate", "version", "help", "-h", "--help":
+	case "migrate", "version", "help", "-h", "--help", "hook":
 	default:
 		legacyNote()
 	}
@@ -70,6 +73,8 @@ func main() {
 		handleDaemon()
 	case "migrate":
 		handleMigrate(os.Args[2:])
+	case "hook":
+		handleHook(os.Args[2:])
 	case "version":
 		fmt.Printf("motorsaw version %s\n", version)
 	case "help", "-h", "--help":
