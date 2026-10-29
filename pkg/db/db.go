@@ -152,6 +152,12 @@ func (db *DB) initSchema() error {
 		if err := upgradeProjects(tx); err != nil {
 			return err
 		}
+	case version == "3.2.0":
+		// 3.3.0 added embedding_keys, made above. The vectors of before have
+		// no key, and are asked for again when their file is next indexed.
+		if _, err := tx.Exec("UPDATE meta SET value = ? WHERE key = ?", SchemaVersion, MetaKeySchemaVersion); err != nil {
+			return fmt.Errorf("failed to upgrade schema: %w", err)
+		}
 	case version != SchemaVersion:
 		return fmt.Errorf("database %s has schema %s, this version needs %s; remove it and index again", db.path, version, SchemaVersion)
 	}

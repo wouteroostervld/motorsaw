@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/wouteroostervld/motorsaw/pkg/config"
+	"github.com/wouteroostervld/motorsaw/pkg/db"
 	"github.com/wouteroostervld/motorsaw/pkg/embed"
 	"github.com/wouteroostervld/motorsaw/pkg/view"
 )
@@ -29,14 +30,19 @@ Options:
   --expand file    Also show its file folded to signatures, with the definition in full
   --expand calls   As file, and also what those definitions call
   --no-index       Search the index as it is, without first embedding what changed here
-  --oneline        One result on a line: path:lines, distance and what it is
-                   in, separated by tabs, and nothing else
+  --oneline        One result on a line: path:lines (the path alone when the
+                   file changed), distance and what it is in, separated by
+                   tabs, and nothing else
   --width N        Cut lines to N characters
 
 Options may stand before or after the words.
 
 Before a search runs, source files under the current directory that are new
 or modified are embedded, when embeddings are switched on for them.
+
+A result in a file that changed after it was embedded, as can happen with
+--no-index or --all, is shown without lines: the lines it was at may now
+hold something else. "motorsaw outline" gives the lines as they are.
 
 Examples:
   motorsaw search "where are retries handled"
@@ -111,26 +117,40 @@ func handleSearch(args []string) {
 		fmt.Fprintf(out, "search: %q\n", query)
 	}
 	var hits []view.Hit
+	found := 0
 	if have != "" {
 		vectors, err := client.Embed(context.Background(), []string{embed.QueryText(client.Model(), query)})
 		if err != nil {
 			fail("%v", err)
 		}
-		found, err := database.SearchEmbeddings(vectors[0], *limit, root)
+		results, err := database.SearchEmbeddings(vectors[0], *limit, root)
 		if err != nil {
 			fail("%v", err)
 		}
-		for i, h := range found {
-			hits = append(hits, view.Hit{Path: h.Path, Line: h.StartLine})
+		found = len(results)
+		for i, h := range results {
+			current := embeddedAsIs(database, h.Path)
+			if current {
+				// Only lines that still hold what was found can be shown
+				hits = append(hits, view.Hit{Path: h.Path, Line: h.StartLine})
+			}
 			if *oneline {
-				fmt.Fprintf(out, "%s:%d-%d\t%.3f\t%s\n", displayPath(h.Path, cwd), h.StartLine, h.EndLine, h.Distance, oneLine(h.Title))
+				where := displayPath(h.Path, cwd)
+				if current {
+					where += fmt.Sprintf(":%d-%d", h.StartLine, h.EndLine)
+				}
+				fmt.Fprintf(out, "%s\t%.3f\t%s\n", where, h.Distance, oneLine(h.Title))
 				continue
 			}
 			if i == 0 {
 				fmt.Fprintln(out, "results:")
 			}
 			printValue(out, "  - ", "file", displayPath(h.Path, cwd))
-			printValue(out, "    ", "lines", fmt.Sprintf("%d-%d", h.StartLine, h.EndLine))
+			if current {
+				printValue(out, "    ", "lines", fmt.Sprintf("%d-%d", h.StartLine, h.EndLine))
+			} else {
+				printValue(out, "    ", "changed", "the file changed after it was embedded; motorsaw outline gives its lines")
+			}
 			if h.Title != "" {
 				printValue(out, "    ", "in", h.Title)
 			}
@@ -138,7 +158,7 @@ func handleSearch(args []string) {
 		}
 	}
 
-	if len(hits) == 0 {
+	if found == 0 {
 		if !*oneline {
 			fmt.Fprintln(out, "results: []")
 		}
@@ -150,11 +170,26 @@ func handleSearch(args []string) {
 		return
 	}
 	if !*oneline {
-		fmt.Fprintf(out, "total: %d\n", len(hits))
+		fmt.Fprintf(out, "total: %d\n", found)
 	}
 
-	if mode != "" {
+	if mode != "" && len(hits) > 0 {
 		fmt.Fprintln(out)
 		renderHits(out, hits, mode, cwd, *noIndex)
 	}
+}
+
+// embeddedAsIs reports whether a file is as it was when its embeddings were
+// made, so that the lines they give are still its lines
+func embeddedAsIs(database *db.DB, path string) bool {
+	f, err := database.GetFile(path)
+	if err != nil || f == nil {
+		return false
+	}
+	held, err := database.FileModules(f.ID)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.ModTime().UnixNano() == held[config.IndexEmbeddings]
 }

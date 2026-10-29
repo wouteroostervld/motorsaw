@@ -457,12 +457,17 @@ its signatures.
 | `--limit N` | Results to return (default 10) |
 | `--expand body`, `file`, `calls` | Also show the code, as for `grep` and `query` |
 | `--no-index` | Search the index as it is, without first embedding what changed here |
-| `--oneline` | One result on a line: `path:lines`, distance and what it is in, separated by tabs |
+| `--oneline` | One result on a line: `path:lines` (the path alone when the file changed), distance and what it is in, separated by tabs |
 | `--width N` | Cut lines to N characters |
 
 Before a search runs, files under the current directory that are new or
 modified are embedded, when embeddings are on for them. More than 100 files
 are left for `motorsaw index .`, since every file is a request to the model.
+
+A result in a file that changed after it was embedded, as can happen with
+`--no-index`, with `--all`, or past those 100 files, is shown without
+lines, as `changed:`, and is not expanded: the lines it was at may now hold
+something else. `motorsaw outline` gives the lines as they are.
 
 ## Showing code: --expand
 

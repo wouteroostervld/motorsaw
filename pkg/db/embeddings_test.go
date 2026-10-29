@@ -1,6 +1,7 @@
 package db
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -86,5 +87,65 @@ func TestEmbeddings(t *testing.T) {
 	}
 	if err := database.InsertEmbeddings(b, "other", []EmbeddingChunk{{Vector: []float32{1, 0}}}); err != nil {
 		t.Errorf("another model after a reset: %v", err)
+	}
+}
+
+func TestCachedEmbeddings(t *testing.T) {
+	database := openSymbolsDB(t)
+
+	// Nothing embedded yet: nothing is found, and nothing fails
+	if cached, err := database.CachedEmbeddings([]string{"k1"}); err != nil || len(cached) != 0 {
+		t.Fatalf("empty index: %v, %v", cached, err)
+	}
+
+	a, _ := addFile(t, database, "/src/one/a.go")
+	b, _ := addFile(t, database, "/src/two/a.go")
+	if err := database.InsertEmbeddings(a, "m", []EmbeddingChunk{
+		{StartLine: 1, EndLine: 9, Key: "k1", Vector: []float32{1, 0.5, -2}},
+		{StartLine: 3, EndLine: 7, Vector: []float32{0, 1, 0}}, // No key: never reused
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.InsertEmbeddings(b, "m", []EmbeddingChunk{
+		{StartLine: 1, EndLine: 9, Key: "k1", Vector: []float32{1, 0.5, -2}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cached, err := database.CachedEmbeddings([]string{"k1", "k2", "k1", ""})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cached) != 1 || !reflect.DeepEqual(cached["k1"], []float32{1, 0.5, -2}) {
+		t.Errorf("cached = %v, want k1 only, as stored", cached)
+	}
+
+	// A key stays while any chunk with that text is left
+	if err := database.DeleteEmbeddings(a); err != nil {
+		t.Fatal(err)
+	}
+	if cached, _ := database.CachedEmbeddings([]string{"k1"}); len(cached) != 1 {
+		t.Errorf("after deleting one of two copies: %v, want k1", cached)
+	}
+	if err := database.DeleteEmbeddings(b); err != nil {
+		t.Fatal(err)
+	}
+	if cached, _ := database.CachedEmbeddings([]string{"k1"}); len(cached) != 0 {
+		t.Errorf("after deleting both copies: %v, want nothing", cached)
+	}
+	var keys int
+	if err := database.conn.QueryRow("SELECT COUNT(*) FROM embedding_keys").Scan(&keys); err != nil || keys != 0 {
+		t.Errorf("%d keys left without a chunk (%v)", keys, err)
+	}
+
+	// A reset forgets every key with the vectors
+	if err := database.InsertEmbeddings(a, "m", []EmbeddingChunk{{Key: "k1", Vector: []float32{1, 0, 0}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.ResetEmbeddings("embeddings"); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.conn.QueryRow("SELECT COUNT(*) FROM embedding_keys").Scan(&keys); err != nil || keys != 0 {
+		t.Errorf("%d keys left after a reset (%v)", keys, err)
 	}
 }
