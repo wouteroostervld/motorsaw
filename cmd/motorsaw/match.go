@@ -47,6 +47,9 @@ Options:
   --signature      Only captures in the signature of a definition: in the
                    definition, before its body. Works alike in every language
   --lang NAME      Only this language: ` + "%s" + `
+  --writes NAME    Instead of a query: the places that assign a variable, field
+                   or property of this name, or an element of one (=, +=, ++,
+                   and in PHP =&). Go, PHP, Python, JavaScript, TypeScript, C
   --tree           Show the syntax tree of a file instead of searching
   --lines N-M      With --tree, only the nodes on these lines
   -s               Only list the definitions that contain a match, with a count
@@ -76,6 +79,9 @@ Examples:
       result: (type_identifier) @_r
       (#eq? @_t "context.Context") (#eq? @_r "error")) @m'
 
+  # Every function that writes Current::$database, grouped by function
+  motorsaw match -s --writes '$database' src
+
   # The tree of a few lines
   motorsaw match --tree --lines 40-52 pkg/grep/grep.go`
 
@@ -87,9 +93,18 @@ func handleMatch(args []string) {
 	language := flags.String("lang", "", "")
 	tree := flags.Bool("tree", false, "")
 	lines := flags.String("lines", "", "")
+	writes := flags.String("writes", "", "")
 	shaped := shapeFlags(flags)
 	given := parse(flags, args)
 
+	if *writes != "" {
+		// The query is made from the name; what is given are the paths
+		q, err := writesQuery(*writes)
+		if err != nil {
+			fail("%v", err)
+		}
+		given = append([]string{q}, given...)
+	}
 	if len(given) < 1 {
 		fmt.Println(usage)
 		os.Exit(1)

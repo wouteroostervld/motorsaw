@@ -206,8 +206,32 @@ to one. When nothing is found, a note names the languages that were searched.
 |---|---|
 | `--signature` | Only captures in the signature of a definition |
 | `--lang NAME` | Only this language |
+| `--writes NAME` | Instead of a query: what assigns this name (below) |
 | `--tree` | Show the syntax tree of a file instead of searching |
 | `--lines N-M` | With `--tree`, only the nodes on these lines |
+
+### Who writes a name: --writes
+
+`--writes NAME` stands for a query: the places that assign a variable, field
+or property of that name, or an element of one. That covers `=`, `+=` and the
+like, `++` and `--`, Go's `:=`, assignments of several targets at once, and in
+PHP `=&` on either side (a reference can change what it points at). A read of
+the name, as an argument, an index or on the right of `=`, is not a write.
+
+```bash
+# Every function that writes the field, grouped by function
+motorsaw match -s --writes Current_sp_database
+
+# PHP: that class's static property only, not local variables called $database
+motorsaw match -s --writes 'Current::$database' src
+```
+
+A bare name is matched as written, in Go, PHP (with or without its `$`),
+Python, JavaScript, TypeScript and C, and wherever else their patterns fit.
+`Class::$name` holds PHP to the static property of that class, written with
+or without its namespace; `self::` and `static::` inside the class are not
+followed. A write through a pointer, an alias or a by-reference argument
+cannot be seen in the syntax tree.
 
 ### Matching on signatures
 
