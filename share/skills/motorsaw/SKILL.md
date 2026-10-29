@@ -5,8 +5,8 @@ description: Structural code search for a local codebase with the motorsaw CLI. 
 
 # Motorsaw
 
-`motorsaw` looks at code through its syntax tree. Four commands, all
-read-only, plus a fourth that only works where it is switched on:
+`motorsaw` looks at code through its syntax tree. Four read-only commands,
+plus a fifth that only works where it is switched on:
 
 | Command | Answers | Needs the index |
 |---|---|---|
@@ -17,9 +17,14 @@ read-only, plus a fourth that only works where it is switched on:
 | `motorsaw search <words>` | Where is the code that does this, when I have no name for it? | Yes, and off by default |
 
 Run them from inside the project. Parsed languages: Go, Python, JavaScript,
-TypeScript, Rust, Java, C, C++, Ruby, BCPL, Motorola 68000 assembly (a global
-label and the lines under it are one definition), IBM Enterprise COBOL (a
-paragraph or section is a definition; names are upper case).
+TypeScript/TSX, Rust, Java, C, C++, Ruby, PHP, BCPL, Motorola 68000 assembly,
+x86 assembly (Intel/NASM and AT&T/gas syntax) and IBM Enterprise COBOL. In
+assembly a global label and the lines under it are one definition, and a
+`call` or a jump to another global label is a call; in COBOL a paragraph or
+section is a definition, and names are upper case. The `.s`, `.asm`, `.i` and
+`.inc` files of every processor share extensions, so each is read as the
+language it has the fewest errors in (`match --lang` takes `m68k`, `nasm` or
+`gas`).
 
 If `motorsaw` is not on the PATH, say so and work with plain grep; do not
 install it yourself. It is built from
@@ -81,6 +86,15 @@ motorsaw match '(function_definition parameters: (parameter_list . (parameter) .
   ones that fit it; `--lang go` holds it to one.
 - `--signature` keeps the captures before the body of a definition, which is
   how to match on signatures without knowing each grammar.
+- `--writes NAME` needs no query: every place that assigns a variable, field
+  or property of that name, or an element of one (`=`, `+=`, `++`, Go's `:=`,
+  several targets at once, PHP's `=&`). Reads are left out. In PHP,
+  `Class::$name` holds it to that class's static property.
+
+```bash
+motorsaw match -s --writes Current_sp_database      # who writes this field, by function
+motorsaw match -s --writes 'Current::$database' src  # PHP: that static property, not locals named $database
+```
 
 ## outline: a file folded to its signatures
 
@@ -188,7 +202,20 @@ or a further filter.
 - **"Where is X used?"** `motorsaw grep -s 'X'`: every use, grouped by definition.
 - **"Change X everywhere."** `motorsaw grep 'X'` for the complete list. Never rely on the graph alone for completeness: it does not see strings, comments, macros or reflection.
 - **"Which functions take or return X?"** `motorsaw grep --signature -s 'X'`; for an exact shape, `motorsaw match`.
+- **"Who changes X?"** `motorsaw match -s --writes X`: every assignment, grouped by function; more complete than grepping for `X = `.
 - **"What does this file do?"** `motorsaw outline <file>`.
 - **"Who calls X?" / "What does X reach?"** `motorsaw query`, then `--expand body` to read the callers.
 - **"What implements this interface?"** `motorsaw query` with `[:implements]`.
 - **You only have a description and no name.** Try `motorsaw search --expand body "<description>"`. It works only where the user switched on the embeddings index (`motorsaw status` says `embeddings: on here`). If it reports that no model is configured, or returns nothing with a note that embeddings are off, do not switch them on yourself: it costs the user model requests. Guess identifiers with `grep -i`, or outline the likely files.
+
+## When a Read is refused with an outline
+
+Where the user has switched on `motorsaw hook read`, reading a large source
+file whole with the Read tool is refused once, and the refusal carries the
+file's outline and commands to read on. That is not an error: pick the lines
+you need from the outline and read them with `offset` and `limit`, or run the
+`motorsaw outline --body` it names. If you do need the whole file, read it
+again: a second whole read of the same file goes through.
+
+The user switches it with `MOTORSAW_READ_HOOK` in the settings' `env`
+(`deny`, `context`, or `off`); do not change it yourself.
