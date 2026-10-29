@@ -27,6 +27,19 @@ func writeBig(t *testing.T, n int) string {
 	return path
 }
 
+func TestShellQuote(t *testing.T) {
+	for in, want := range map[string]string{
+		"/a/b_c.go":    "/a/b_c.go",
+		"/a b/c.go":    "'/a b/c.go'",
+		"/it's/x.go":   `'/it'\''s/x.go'`,
+		"/a/$HOME.php": "'/a/$HOME.php'",
+	} {
+		if got := shellQuote(in); got != want {
+			t.Errorf("shellQuote(%q) = %s, want %s", in, got, want)
+		}
+	}
+}
+
 func hookIn(session, path, extra string) *strings.Reader {
 	return strings.NewReader(fmt.Sprintf(`{"session_id":%q,"tool_name":"Read","tool_input":{"file_path":%q%s}}`, session, path, extra))
 }
@@ -48,6 +61,13 @@ func TestReadHook(t *testing.T) {
 	reason := out.HookSpecificOutput.PermissionDecisionReason
 	if !strings.Contains(reason, "func F0(x int) int") || strings.Contains(reason, "x += 3") {
 		t.Errorf("the reason should hold the outline, signatures without bodies:\n%s", reason)
+	}
+	// ... and commands that can be run as they are, on this file
+	for _, want := range []string{"`motorsaw outline " + big + "`", "`motorsaw outline --body F0 " + big + "`",
+		"`motorsaw grep -s 'F0' " + filepath.Dir(big) + "`"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("the reason should name %s:\n%s", want, reason)
+		}
 	}
 	if got := readHook(hookIn("s1", big, ""), deny); got != nil {
 		t.Errorf("the same whole read again must go through, got %+v", got)
@@ -76,7 +96,8 @@ func TestReadHook(t *testing.T) {
 	}
 
 	ctx := readHook(hookIn("s4", big, ""), cfg("context"))
-	if ctx == nil || ctx.HookSpecificOutput.PermissionDecision != "" || !strings.Contains(ctx.HookSpecificOutput.AdditionalContext, "func F0(x int) int") {
+	if ctx == nil || ctx.HookSpecificOutput.PermissionDecision != "" || !strings.Contains(ctx.HookSpecificOutput.AdditionalContext, "func F0(x int) int") ||
+		!strings.Contains(ctx.HookSpecificOutput.AdditionalContext, "motorsaw outline --body") {
 		t.Errorf("context mode: got %+v, want the read allowed with the outline added", ctx)
 	}
 

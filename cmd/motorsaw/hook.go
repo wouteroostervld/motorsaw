@@ -129,19 +129,53 @@ func readHook(stdin io.Reader, cfg readHookConfig) *hookOutput {
 		outline = outline[:cfg.maxBytes] + "\n[outline cut at " + strconv.Itoa(cfg.maxBytes) + " bytes]\n"
 	}
 
+	how := readOn(f, path)
 	if cfg.mode == "context" {
 		return &hookOutput{hookSpecific{
-			HookEventName:     "PreToolUse",
-			AdditionalContext: fmt.Sprintf("Outline of %s (%d lines), from motorsaw:\n\n%s", path, lines, outline),
+			HookEventName: "PreToolUse",
+			AdditionalContext: fmt.Sprintf("%s has %d lines. Its outline, as `motorsaw outline %s` prints it:\n\n%s\n%s",
+				path, lines, shellQuote(path), outline, how),
 		}}
 	}
 	return &hookOutput{hookSpecific{
 		HookEventName:      "PreToolUse",
 		PermissionDecision: "deny",
-		PermissionDecisionReason: fmt.Sprintf("%s has %d lines. Here is its outline (motorsaw outline); read the "+
-			"lines you need with offset and limit, or show one definition with `motorsaw outline --body NAME %s`. "+
-			"Reading the whole file again goes through.\n\n%s", path, lines, path, outline),
+		PermissionDecisionReason: fmt.Sprintf("Not read whole: %s has %d lines. Its outline, as `motorsaw outline %s` "+
+			"prints it:\n\n%s\n%s", path, lines, shellQuote(path), outline, how),
 	}}
+}
+
+// readOn says how to read on from an outline, with commands that can be run
+// as they are: they name the largest definition in the file
+func readOn(f *chunker.File, path string) string {
+	q := shellQuote(path)
+	var b strings.Builder
+	b.WriteString("To read on:\n")
+	b.WriteString("- some lines: Read with offset and limit; the outline gives the lines of each definition\n")
+	largest := -1
+	for i, s := range f.Symbols {
+		if largest < 0 || s.EndLine-s.StartLine > f.Symbols[largest].EndLine-f.Symbols[largest].StartLine {
+			largest = i
+		}
+	}
+	if largest >= 0 {
+		s := f.Symbols[largest]
+		fmt.Fprintf(&b, "- one definition: `motorsaw outline --body %s %s` (lines %d-%d)\n", s.QualifiedName(), q, s.StartLine, s.EndLine)
+		fmt.Fprintf(&b, "- where a name is used, by definition: `motorsaw grep -s '%s' %s`\n", s.Name, shellQuote(filepath.Dir(path)))
+	}
+	b.WriteString("- all of it: Read the whole file again; a second whole read goes through\n")
+	return b.String()
+}
+
+// shellQuote quotes a path for a shell when it needs it
+func shellQuote(s string) string {
+	if s != "" && strings.IndexFunc(s, func(r rune) bool {
+		return !(r == '/' || r == '.' || r == '_' || r == '-' || r == '+' || r == ':' || r == '@' ||
+			('a' <= r && r <= 'z') || ('A' <= r && r <= 'Z') || ('0' <= r && r <= '9'))
+	}) < 0 {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // given reports whether an optional number was passed
