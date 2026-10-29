@@ -198,6 +198,28 @@ func TestApply(t *testing.T) {
 	}
 }
 
+// Generated code maps its lines back to its source with //line and /*line*/
+// directives. A call's target is still the Go file that declares it, since
+// that is the file the index has.
+func TestApply_LineDirectives(t *testing.T) {
+	root := writeModule(t)
+	appPath := filepath.Join(root, "app", "app.go")
+
+	src := "package app\n\ntype T struct{}\n\n//line src/T.php:10\nfunc (t *T) M() {}\n\nfunc f(t *T) {\n\t/*line src/f.php:3*/ t.M()\n\tg()\n}\n\n//line src/g.php:1\nfunc g() {}\n"
+	if err := os.WriteFile(appPath, []byte(src), 0600); err != nil {
+		t.Fatal(err)
+	}
+	app := apply(t, NewResolver(), appPath)
+	for _, want := range []chunker.Ref{
+		{Relation: "calls", Name: "M", Container: "T", TargetPath: appPath, External: "app.T.M", Member: true},
+		{Relation: "calls", Name: "g", TargetPath: appPath, External: "app.g"},
+	} {
+		if got := refsFrom(app, "f", chunker.RelationCalls); !hasRef(got, want) {
+			t.Errorf("f: missing %+v in %+v", want, got)
+		}
+	}
+}
+
 func TestApply_SeesEdits(t *testing.T) {
 	root := writeModule(t)
 	appPath := filepath.Join(root, "app", "app.go")

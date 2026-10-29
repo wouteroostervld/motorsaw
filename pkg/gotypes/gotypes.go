@@ -685,7 +685,8 @@ func externalName(pkg *types.Package, container, name string) string {
 // itself, such as the Error method of error
 const builtinPath = "builtin"
 
-// position returns the file an object is declared in
+// position returns the file an object is declared in: the Go file, not the
+// file a //line or /*line*/ directive in generated code points back to
 func (x *extractor) position(obj types.Object) string {
 	if !obj.Pos().IsValid() {
 		return builtinPath
@@ -694,7 +695,7 @@ func (x *extractor) position(obj types.Object) string {
 	if x.checked.load.local[obj.Pkg()] {
 		fset = x.checked.fset
 	}
-	return fset.Position(obj.Pos()).Filename
+	return fset.PositionFor(obj.Pos(), false).Filename
 }
 
 // moduleTypes returns the named types declared in the packages of the module
