@@ -23,6 +23,10 @@ small files and files motorsaw cannot parse are left alone, and so is a
 second whole read of the same file in a session: an agent that does need all
 of it gets it.
 
+Only files motorsaw can parse are looked at, as their name says, and only
+regular files of up to 16 MB that are text: a video, an executable or a
+binary under a source name is let through untouched, without being read.
+
 Reads the hook's JSON on standard input and writes its answer on standard
 output. It never fails a read: on any error it says nothing.
 
@@ -79,6 +83,7 @@ type readHookConfig struct {
 	mode     string // off, context or deny
 	minLines int
 	maxBytes int
+	maxFile  int64  // larger files are not looked at
 	stateDir string // where the files already outlined in a session are kept
 	// project finds the mode a project was switched to, for the session's
 	// directory; "" when it was not switched
@@ -126,6 +131,7 @@ func readHookConfigFromEnv() readHookConfig {
 		mode:     strings.ToLower(strings.TrimSpace(os.Getenv("MOTORSAW_READ_HOOK"))),
 		minLines: number("MOTORSAW_READ_HOOK_LINES", 300),
 		maxBytes: number("MOTORSAW_READ_HOOK_MAX", 16000),
+		maxFile:  16 << 20,
 		stateDir: filepath.Join(os.TempDir(), "motorsaw-read-hook"),
 		project:  func(cwd string) string { m, _ := projectMode(cwd); return m },
 	}
@@ -164,8 +170,17 @@ func readHook(stdin io.Reader, cfg readHookConfig) *hookOutput {
 		return nil
 	}
 	path := in.ToolInput.FilePath
+	// Decided before the file is read: a video or an executable is not a
+	// source file, and neither is anything that is not a regular file
+	if !chunker.Supported(path) {
+		return nil
+	}
+	if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() || info.Size() > cfg.maxFile {
+		return nil
+	}
 	content, err := os.ReadFile(path)
-	if err != nil {
+	if err != nil || bytes.IndexByte(content[:min(len(content), 8000)], 0) >= 0 {
+		// Binary, whatever its name says
 		return nil
 	}
 	lines := bytes.Count(content, []byte("\n"))

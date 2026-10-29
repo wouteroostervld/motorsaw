@@ -492,6 +492,11 @@ or a limit, a small file, a file motorsaw cannot parse, and a second whole
 read of the same file in a session are left alone: an agent that does need
 all of it gets it.
 
+It looks only at files motorsaw parses, by their name, and only at regular
+files of up to 16 MB that are text, decided before the file is read: a video,
+an executable, or a binary that bears a source file's name, is let through
+untouched and unread.
+
 It is off until it is switched on, so installing it changes nothing. To
 switch it on for one project, put this in the project's
 `.claude/settings.local.json` (or in `~/.claude/settings.json` for all):

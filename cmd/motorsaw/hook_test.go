@@ -49,8 +49,16 @@ func TestReadHook(t *testing.T) {
 	small := writeBig(t, 20)
 	text := filepath.Join(t.TempDir(), "notes.txt")
 	os.WriteFile(text, []byte(strings.Repeat("a line\n", 500)), 0600)
+	// A binary: a video by its name, and one that calls itself Go
+	binDir := t.TempDir()
+	blob := append([]byte("\x00\x00\x00\x18ftypmp42"), []byte(strings.Repeat("x\n", 500))...)
+	video, binGo := filepath.Join(binDir, "clip.mp4"), filepath.Join(binDir, "blob.go")
+	os.WriteFile(video, blob, 0600)
+	os.WriteFile(binGo, blob, 0600)
+	dirGo := filepath.Join(binDir, "pkg.go")
+	os.Mkdir(dirGo, 0755)
 	cfg := func(mode string) readHookConfig {
-		return readHookConfig{mode: mode, minLines: 300, maxBytes: 16000, stateDir: t.TempDir()}
+		return readHookConfig{mode: mode, minLines: 300, maxBytes: 16000, maxFile: 16 << 20, stateDir: t.TempDir()}
 	}
 
 	deny := cfg("deny")
@@ -87,6 +95,9 @@ func TestReadHook(t *testing.T) {
 		"small file":   {hookIn("s3", small, ""), deny},
 		"not parsable": {hookIn("s3", text, ""), deny},
 		"missing file": {hookIn("s3", "/nonexistent/x.go", ""), deny},
+		"video":        {hookIn("s3", video, ""), deny},
+		"binary as go": {hookIn("s3", binGo, ""), deny},
+		"directory":    {hookIn("s3", dirGo, ""), deny},
 		"other tool":   {strings.NewReader(`{"tool_name":"Edit","tool_input":{"file_path":"x"}}`), deny},
 		"not json":     {strings.NewReader(`{`), deny},
 	} {
@@ -99,6 +110,12 @@ func TestReadHook(t *testing.T) {
 	if ctx == nil || ctx.HookSpecificOutput.PermissionDecision != "" || !strings.Contains(ctx.HookSpecificOutput.AdditionalContext, "func F0(x int) int") ||
 		!strings.Contains(ctx.HookSpecificOutput.AdditionalContext, "motorsaw outline --body") {
 		t.Errorf("context mode: got %+v, want the read allowed with the outline added", ctx)
+	}
+
+	huge := cfg("deny")
+	huge.maxFile = 1000
+	if out := readHook(hookIn("s6", big, ""), huge); out != nil {
+		t.Errorf("a file over the size cap must be left alone, got %+v", out)
 	}
 
 	short := cfg("deny")
@@ -125,7 +142,7 @@ func TestReadHookProjectMode(t *testing.T) {
 		return strings.NewReader(fmt.Sprintf(`{"session_id":%q,"cwd":%q,"tool_name":"Read","tool_input":{"file_path":%q}}`, session, cwd, big))
 	}
 	cfg := func(env string) readHookConfig {
-		return readHookConfig{mode: env, minLines: 300, maxBytes: 16000, stateDir: t.TempDir(),
+		return readHookConfig{mode: env, minLines: 300, maxBytes: 16000, maxFile: 16 << 20, stateDir: t.TempDir(),
 			project: func(cwd string) string { m, _ := projectMode(cwd); return m }}
 	}
 
