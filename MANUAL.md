@@ -708,7 +708,7 @@ file or a directory that you name is indexed or searched whatever it is in:
 
 To keep what git ignores, say `gitignore: false`, in the profile for
 everything or in the `.config.yaml` of a project for the tree below it;
-`--no-ignore` on `index` and `grep` does it for one run. The ignore file of
+`--no-ignore` on `index`, `grep` and `match` does it for one run. The ignore file of
 your git configuration (`core.excludesFile`) is not read. A file that is
 tracked although a pattern names it counts as ignored. A repository that is
 your home directory itself is passed over.
