@@ -24,6 +24,7 @@ type MockDatabase struct {
 	EmbeddingModel   string
 	Embeddings       []db.EmbeddingChunk
 	EmbeddingInserts int
+	EmbeddingDeletes int
 }
 
 // MockChunk is a chunk the indexer stored
@@ -96,6 +97,7 @@ func (m *MockDatabase) InsertEmbeddings(fileID int64, model string, chunks []db.
 }
 
 func (m *MockDatabase) DeleteEmbeddings(fileID int64) error {
+	m.EmbeddingDeletes++
 	m.Embeddings = nil
 	return nil
 }

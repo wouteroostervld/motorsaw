@@ -532,3 +532,39 @@ func TestEmbeddings_EditSendsItsBranch(t *testing.T) {
 		}
 	}
 }
+
+// Forgetting a file asks the embeddings to forget it only when some were
+// made of it: finding a file's rows in the vector table scans every vector,
+// which made forgetting a file without any take a fifth of a second
+func TestForgetFile_EmbeddingsOnlyWhenMade(t *testing.T) {
+	path := source(t)
+	ctx := context.Background()
+	mockDB := NewMockDatabase()
+	kinds := map[string]bool{config.IndexGraph: true}
+	idx := New(mockDB, selector(kinds), NewGraph(mockDB), NewEmbeddings(mockDB, &MockEmbedder{}))
+
+	if err := idx.IndexFile(ctx, path, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := idx.ForgetFile(1, path); err != nil {
+		t.Fatal(err)
+	}
+	if mockDB.EmbeddingDeletes != 0 {
+		t.Errorf("embeddings asked to forget a file of which none were made (%d times)", mockDB.EmbeddingDeletes)
+	}
+	if mockDB.DeleteChunksCount == 0 || len(mockDB.Forgotten) != 1 {
+		t.Errorf("the graph and the file must still be forgotten: %d chunk deletes, forgotten %v", mockDB.DeleteChunksCount, mockDB.Forgotten)
+	}
+
+	kinds[config.IndexEmbeddings] = true
+	if err := idx.IndexFile(ctx, path, true); err != nil {
+		t.Fatal(err)
+	}
+	before := mockDB.EmbeddingDeletes
+	if err := idx.ForgetFile(1, path); err != nil {
+		t.Fatal(err)
+	}
+	if mockDB.EmbeddingDeletes != before+1 || len(mockDB.Embeddings) != 0 {
+		t.Errorf("a file with embeddings must have them forgotten: %d deletes, %d left", mockDB.EmbeddingDeletes-before, len(mockDB.Embeddings))
+	}
+}

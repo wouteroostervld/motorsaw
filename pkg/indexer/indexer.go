@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 
 	"github.com/wouteroostervld/motorsaw/pkg/chunker"
+	"github.com/wouteroostervld/motorsaw/pkg/config"
 	"github.com/wouteroostervld/motorsaw/pkg/db"
 )
 
@@ -224,7 +225,18 @@ func (idx *Indexer) IndexFile(ctx context.Context, filePath string, force bool) 
 // ForgetFile drops everything the index has of a file, in every module. The
 // file on disk is not touched: this is for a file that is already gone from it.
 func (idx *Indexer) ForgetFile(fileID int64, filePath string) error {
+	held, err := idx.db.FileModules(fileID)
+	if err != nil {
+		return err
+	}
 	for _, m := range idx.modules {
+		// The vectors are in a table where finding a file's rows means going
+		// through all of them: a fifth of a second a file in a large index.
+		// Whatever has vectors is recorded as held, so a file that is not
+		// has none to forget.
+		if _, ok := held[m.Name()]; !ok && m.Name() == config.IndexEmbeddings {
+			continue
+		}
 		if err := m.Forget(fileID); err != nil {
 			return &ModuleError{Module: m.Name(), Err: err}
 		}
