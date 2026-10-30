@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -152,6 +154,46 @@ func TestPruneIgnored(t *testing.T) {
 	// No file on disk was touched
 	if got := len(everyFile(t, dir, outside)); got != 12 {
 		t.Errorf("%d files on disk, want 12", got)
+	}
+}
+
+// Another process writing to the index makes a delete fail with "database
+// is locked" once SQLite stops waiting: the prune waits and goes on, where
+// it used to give up and leave the rest of what it should forget
+func TestPruneIgnored_WaitsForAnotherWriter(t *testing.T) {
+	dir, _, database := daemonProject(t)
+	configureDaemon(t, []string{dir}, "")
+	syncAll(t, database, everyFile(t, dir), syncOptions{})
+	configureDaemon(t, []string{dir}, "    exclude: [third]\n")
+	cfg, err := loadDaemonConfig(database, scanFlags{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	busy := make(map[string]bool)
+	flaky := func(id int64, path string) error {
+		if !busy[path] {
+			busy[path] = true
+			return errors.New("graph index: failed to delete file: database is locked")
+		}
+		return cfg.idx.ForgetFile(id, path)
+	}
+	stats, err := pruneWith(context.Background(), database, cfg, flaky)
+	// third/t.py and third/lib/l.py for the exclude, .hidden/c.py for hiding
+	if err != nil || stats.pruned != 3 {
+		t.Fatalf("prune = %+v, %v, want 3 pruned after waiting", stats, err)
+	}
+	if got := indexed(t, database, filepath.Join(dir, "third")); len(got) != 0 {
+		t.Errorf("still indexed under third: %q", got)
+	}
+
+	// Another error is not waited for
+	configureDaemon(t, []string{dir}, "    exclude: [sub]\n")
+	if cfg, err = loadDaemonConfig(database, scanFlags{}, false); err != nil {
+		t.Fatal(err)
+	}
+	broken := func(int64, string) error { return errors.New("no such table: files") }
+	if _, err := pruneWith(context.Background(), database, cfg, broken); err == nil || !strings.Contains(err.Error(), "no such table") {
+		t.Errorf("prune with a broken index = %v, want its error at once", err)
 	}
 }
 

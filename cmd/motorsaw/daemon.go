@@ -539,7 +539,27 @@ type pruneStats struct {
 // that was indexed by name from a directory that is excluded is forgotten,
 // as there is no telling it from one that was indexed before the directory
 // was excluded.
-func pruneIgnored(ctx context.Context, database *db.DB, cfg *daemonConfig) (stats pruneStats, err error) {
+func pruneIgnored(ctx context.Context, database *db.DB, cfg *daemonConfig) (pruneStats, error) {
+	return pruneWith(ctx, database, cfg, cfg.idx.ForgetFile)
+}
+
+// pruneWith is pruneIgnored with the function that makes the index forget a
+// file. Like forget, it waits for another process that writes to the index
+// (an index run in a terminal, for minutes) instead of failing, and resolves
+// the references to what went once at the end instead of once a file.
+func pruneWith(ctx context.Context, database *db.DB, cfg *daemonConfig, forgetFile func(id int64, path string) error) (stats pruneStats, err error) {
+	wait := syncOptions{ctx: ctx, log: slog.Default(), patience: indexPatience}
+	resolve := database.DeferResolving(resolveEvery)
+	defer func() {
+		resolveErr := resolve()
+		if db.IsBusy(resolveErr) {
+			resolveErr = wait.write(database.ResolveSymbols)
+		}
+		if err == nil {
+			err = resolveErr
+		}
+	}()
+
 	seen := make(map[string]bool) // Included directories may lie inside each other
 	for _, root := range cfg.include {
 		indexed, err := database.IndexedFiles(root)
@@ -558,7 +578,7 @@ func pruneIgnored(ctx context.Context, database *db.DB, cfg *daemonConfig) (stat
 			if ignored, _ := cfg.ignores(path); !ignored {
 				continue
 			}
-			if err := cfg.idx.ForgetFile(f.ID, path); err != nil {
+			if err := wait.write(func() error { return forgetFile(f.ID, path) }); err != nil {
 				return stats, err
 			}
 			stats.pruned++
